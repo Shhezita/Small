@@ -81,8 +81,15 @@ app.delete('/pack/:id', (req, res) => {
 });
 
 // Start server
-app.listen(PORT, () => {
-    console.log(`Hostile Server running on http://localhost:${PORT}`);
+if (require.main === module) {
+    app.listen(PORT, () => {
+        console.log(`Hostile Server running on http://localhost:${PORT}`);
+    });
+}
+
+// Root route for health check
+app.get('/', (req, res) => {
+    res.send('Hostile Server is active.');
 });
 
 module.exports = app;
