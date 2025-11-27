@@ -15,9 +15,13 @@ app.use(bodyParser.urlencoded({ extended: true }));
 // Endpoint de Validación de Clave
 app.put('/check-licence/check/:key', (req, res) => {
     console.log(`[LICENSE] Check requested for key: ${req.params.key}`);
-    // Responde "dummy" para que el bot crea que es válida
+    
+    // FIX: Usamos un string de longitud 120 (múltiplo de 12) y caracteres Base64 válidos (sin guiones bajos)
+    // Texto decodificado: "This is a fake license for testing purposes" repetido.
+    const safeLicence = "VGhpcyBpcyBhIGZha2UgbGljZW5zZSBmb3IgdGVzdGluZyBwdXJwb3Nlcw==VGhpcyBpcyBhIGZha2UgbGljZW5zZSBmb3IgdGVzdGluZyBwdXJwb3Nlcw==";
+    
     res.json({
-        licence: "VALID_DUMMY_LICENSE_STRING_REPEATED_TO_SATISFY_LENGTH_CHECKS_VALID_DUMMY_LICENSE_STRING_REPEATED_TO_SATISFY_LENGTH_CHECKS",
+        licence: safeLicence, 
         days: 999,
         object: { valid: true }
     });
@@ -26,8 +30,12 @@ app.put('/check-licence/check/:key', (req, res) => {
 // Endpoint de Licencia Gratuita (Trial)
 app.post('/check-licence/free', (req, res) => {
     console.log(`[LICENSE] Free license requested`);
+    
+    // FIX: Mismo string seguro
+    const safeLicence = "VGhpcyBpcyBhIGZha2UgbGljZW5zZSBmb3IgdGVzdGluZyBwdXJwb3Nlcw==VGhpcyBpcyBhIGZha2UgbGljZW5zZSBmb3IgdGVzdGluZyBwdXJwb3Nlcw==";
+
     res.json({
-        licence: "VALID_DUMMY_LICENSE_STRING_REPEATED_TO_SATISFY_LENGTH_CHECKS_VALID_DUMMY_LICENSE_STRING_REPEATED_TO_SATISFY_LENGTH_CHECKS",
+        licence: safeLicence,
         days: 999,
         object: { valid: true }
     });
@@ -93,3 +101,4 @@ app.get('/', (req, res) => {
 });
 
 module.exports = app;
+
