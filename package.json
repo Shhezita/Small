@@ -1,0 +1,15 @@
+{
+  "name": "hostile-server",
+  "version": "1.0.0",
+  "description": "Hostile server for bypassing security checks",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "crypto-js": "^4.2.0",
+    "cors": "^2.8.5",
+    "body-parser": "^1.20.2"
+  }
+}
