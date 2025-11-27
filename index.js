@@ -84,3 +84,5 @@ app.delete('/pack/:id', (req, res) => {
 app.listen(PORT, () => {
     console.log(`Hostile Server running on http://localhost:${PORT}`);
 });
+
+module.exports = app;
