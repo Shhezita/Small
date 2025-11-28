@@ -201,6 +201,8 @@ const handleCheckVersion = (req, res) => {
         url: "https://small-mu.vercel.app/download", // Dummy URL
         version: req.params.version
     };
+    // Cacheamos la respuesta por 999 días (86313600 segundos)
+    res.set('Cache-Control', 'public, max-age=86313600');
     res.send(encryptResponse(responseData));
 };
 
