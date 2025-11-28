@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 3000;
 //  CONFIGURACIÓN TFG
 // ==========================================
 const AUTO_LICENSE_MODE = true;
-const ENCRYPTION_KEY = "";
+const ENCRYPTION_KEY = "sugi";
 
 // CONSTANTES
 const SAFE_LICENSE = "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkwYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkwYWJjZGVmZ2hpamtsbW5vcHFy";
@@ -73,25 +73,22 @@ const notifyUser = (userId, type, message) => {
 // ==========================================
 //  STATELESS TOKEN HELPERS
 // ==========================================
-const generateStatelessToken = (userId) => {
-    // Format: "userId|expiry"
-    const expiry = Date.now() + 86400000; // 24 hours
-    const rawData = `${userId}|${expiry}`;
+const generateStatelessToken = (userId, chatId = null) => {
+    // Format: "userId|expiry|chatId"
+    const expiry = Date.now() + 5184000000; // 60 days
+    const rawData = `${userId}|${expiry}|${chatId || ''}`;
 
-    // Encrypt using AES ECB (no IV needed for randomness here, we rely on expiry for uniqueness/salt effect)
-    // We use the raw key to avoid "Salted__" header overhead
+    // Encrypt using AES ECB
     const encrypted = CryptoJS.AES.encrypt(rawData, TOKEN_KEY, {
         mode: CryptoJS.mode.ECB,
         padding: CryptoJS.pad.Pkcs7
     });
 
-    // Return Base64 string (standard format)
     return encrypted.toString();
 };
 
 const verifyStatelessToken = (tokenString) => {
     try {
-        // Decrypt
         const decrypted = CryptoJS.AES.decrypt(tokenString, TOKEN_KEY, {
             mode: CryptoJS.mode.ECB,
             padding: CryptoJS.pad.Pkcs7
@@ -100,13 +97,13 @@ const verifyStatelessToken = (tokenString) => {
         const rawData = decrypted.toString(CryptoJS.enc.Utf8);
         if (!rawData) return null;
 
-        const [userId, expiryStr] = rawData.split('|');
+        const [userId, expiryStr, chatId] = rawData.split('|');
         if (!userId || !expiryStr) return null;
 
         const expiry = parseInt(expiryStr);
         if (Date.now() > expiry) return null;
 
-        return userId;
+        return { userId, chatId: chatId || null };
     } catch (e) {
         console.error("Token verification failed:", e.message);
         return null;
@@ -130,7 +127,7 @@ if (TELEGRAM_TOKEN) {
             botUsername = me.username;
             console.log(`[TELEGRAM] Bot Connected! Name: ${me.first_name}, Username: @${me.username}`);
 
-            // Register commands with Telegram API so they show in the menu
+            // Register commands
             bot.setMyCommands([
                 { command: '/start', description: 'Start the bot or link account' },
                 { command: '/status', description: 'Check connection status' },
@@ -154,9 +151,10 @@ if (TELEGRAM_TOKEN) {
 
             if (token) {
                 // Linking logic with Stateless Token
-                const userId = verifyStatelessToken(token);
+                const decoded = verifyStatelessToken(token);
 
-                if (userId) {
+                if (decoded && decoded.userId) {
+                    const userId = decoded.userId;
                     telegramUsers.set(userId, chatId);
                     telegramChats.set(chatId, userId);
 
@@ -165,7 +163,21 @@ if (TELEGRAM_TOKEN) {
                         userPreferences.set(userId, { pm: true, gm: true, bt: true, ge: true });
                     }
 
-                    bot.sendMessage(chatId, "✅ Account successfully linked! You will now receive notifications here.\n\nType /help to see available commands.");
+                    // GENERATE NEW TOKEN WITH CHAT ID
+                    const newToken = generateStatelessToken(userId, chatId);
+
+                    bot.sendMessage(chatId, `✅ *Account Linked!*
+                    
+⚠️ *IMPORTANT ACTION REQUIRED* ⚠️
+Since the server is stateless (Vercel), you MUST update your game settings with this new code to receive notifications:
+
+\`${newToken}\`
+
+1. Copy the code above.
+2. Go to Game Settings -> Telegram.
+3. Paste it into the "Access Token" field (if available) or re-save.
+(If you cannot paste it, notifications might not work reliably on Vercel).`, { parse_mode: 'Markdown' });
+
                     console.log(`[TELEGRAM] Linked chat ${chatId} to user ${userId} (Stateless Token)`);
                 } else {
                     bot.sendMessage(chatId, "❌ Invalid or expired token. Please generate a new one from the game settings.");
@@ -449,7 +461,7 @@ app.post('/telegram/token', (req, res) => {
 
     // Generate Stateless Token
     const token = generateStatelessToken(finalId);
-    const expiresAt = Date.now() + 86400000; // 24 hours
+    const expiresAt = Date.now() + 5184000000; // 60 days
 
     console.log(`[TELEGRAM] Generated stateless token for user ${finalId}`);
     res.json({
@@ -480,7 +492,7 @@ app.get('/telegram/token', (req, res) => {
     // If not linked, generate a stateless token
     if (!chatId) {
         const token = generateStatelessToken(finalId);
-        const expiresAt = Date.now() + 86400000; // 24 hours
+        const expiresAt = Date.now() + 5184000000; // 60 days
 
         response.access_token = token;
         response.expires = expiresAt;
@@ -521,13 +533,15 @@ app.post('/telegram/notify', (req, res) => {
     console.log(`[TELEGRAM] Notify called. Body: ${JSON.stringify(req.body)}`);
     let userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
     const { message, type } = req.body; // Expect 'type' (PM, GM, BT, GE)
+    let explicitChatId = null;
 
     // Verify if userId is actually a token
     if (userId && (userId.length > 20 || userId.includes('.'))) {
-        const verifiedId = verifyStatelessToken(userId);
-        if (verifiedId) {
-            console.log(`[TELEGRAM] Token verified. Resolved ID: ${verifiedId}`);
-            userId = verifiedId;
+        const decoded = verifyStatelessToken(userId);
+        if (decoded && decoded.userId) {
+            console.log(`[TELEGRAM] Token verified. Resolved ID: ${decoded.userId}, ChatID: ${decoded.chatId}`);
+            userId = decoded.userId;
+            explicitChatId = decoded.chatId;
         } else {
             console.log("[TELEGRAM] Invalid token in notify:", userId);
             return res.status(401).send(encryptResponse({ error: "Invalid Token" }));
@@ -540,7 +554,15 @@ app.post('/telegram/notify', (req, res) => {
 
     // Use default type 'PM' if not specified
     const msgType = type || 'PM';
-    const sent = notifyUser(userId, msgType, message);
+
+    // Use explicit ChatID if available (Stateless mode), otherwise fallback to Map (Local mode)
+    let sent = false;
+    if (explicitChatId && bot) {
+        bot.sendMessage(explicitChatId, message).catch(err => console.error(`[TELEGRAM] Stateless Send failed: ${err.message}`));
+        sent = true;
+    } else {
+        sent = notifyUser(userId, msgType, message);
+    }
 
     if (sent) {
         res.send(encryptResponse({ success: true }));
@@ -590,4 +612,3 @@ if (require.main === module) {
 }
 
 module.exports = app;
-
