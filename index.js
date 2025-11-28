@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 3000;
 //  CONFIGURACIÓN TFG
 // ==========================================
 const AUTO_LICENSE_MODE = true;
-const ENCRYPTION_KEY = "sugi";
+const ENCRYPTION_KEY = "";
 
 // CONSTANTES
 const SAFE_LICENSE = "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkwYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkwYWJjZGVmZ2hpamtsbW5vcHFy";
@@ -590,3 +590,4 @@ if (require.main === module) {
 }
 
 module.exports = app;
+
