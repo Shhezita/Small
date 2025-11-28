@@ -369,6 +369,112 @@ app.delete('/pack/:id', (req, res) => {
     packs = packs.filter(p => p._id !== req.params.id);
     res.json({ success: true });
 });
+// ==========================================
+//  RUTAS DE TELEGRAM
+// ==========================================
+
+// ==========================================
+//  STATELESS TOKEN HELPERS
+// ==========================================
+const generateStatelessToken = (userId) => {
+    const payload = JSON.stringify({
+        u: userId,
+        e: Date.now() + 300000 // 5 minutes
+    });
+    const encodedPayload = Buffer.from(payload).toString('base64');
+    const signature = CryptoJS.HmacSHA256(encodedPayload, TELEGRAM_TOKEN).toString(CryptoJS.enc.Base64);
+    return `${encodedPayload}.${signature}`;
+};
+
+const verifyStatelessToken = (tokenString) => {
+    try {
+        const parts = tokenString.split('.');
+        if (parts.length !== 2) return null;
+
+        const [encodedPayload, signature] = parts;
+        const expectedSignature = CryptoJS.HmacSHA256(encodedPayload, TELEGRAM_TOKEN).toString(CryptoJS.enc.Base64);
+
+        if (signature !== expectedSignature) return null;
+
+        const payload = JSON.parse(Buffer.from(encodedPayload, 'base64').toString('utf8'));
+        if (Date.now() > payload.e) return null;
+
+        return payload.u;
+    } catch (e) {
+        console.error("Token verification failed:", e.message);
+        return null;
+    }
+};
+
+// Generate Token & Update Settings
+app.post('/telegram/token', (req, res) => {
+    console.log("[TELEGRAM] POST /telegram/token called");
+
+    const userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
+    const finalId = userId || (AUTO_LICENSE_MODE ? "TFG_GUEST" : null);
+
+    if (!finalId) {
+        console.log("[TELEGRAM] Token gen failed: No ID");
+        return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    // Update Preferences if provided
+    const { pm, gm, bt, ge } = req.body;
+    if (pm !== undefined || gm !== undefined || bt !== undefined || ge !== undefined) {
+        const currentPrefs = userPreferences.get(finalId) || { pm: true, gm: true, bt: true, ge: true };
+        userPreferences.set(finalId, {
+            pm: pm !== undefined ? pm : currentPrefs.pm,
+            gm: gm !== undefined ? gm : currentPrefs.gm,
+            bt: bt !== undefined ? bt : currentPrefs.bt,
+            ge: ge !== undefined ? ge : currentPrefs.ge
+        });
+        console.log(`[TELEGRAM] Updated prefs for ${finalId}:`, userPreferences.get(finalId));
+    }
+
+    const prefs = userPreferences.get(finalId) || { pm: true, gm: true, bt: true, ge: true };
+
+    // Generate Stateless Token
+    const token = generateStatelessToken(finalId);
+    const expiresAt = Date.now() + 300000;
+
+    console.log(`[TELEGRAM] Generated stateless token for user ${finalId}`);
+    res.json({
+        access_token: token,
+        expires: expiresAt,
+        settings: prefs,
+        botName: botUsername
+    });
+});
+
+// Get Token (Check if linked or get pending token)
+app.get('/telegram/token', (req, res) => {
+    const userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
+    const finalId = userId || (AUTO_LICENSE_MODE ? "TFG_GUEST" : null);
+
+    if (!finalId) return res.status(401).json({ error: "Unauthorized" });
+
+    const chatId = telegramUsers.get(finalId);
+    const prefs = userPreferences.get(finalId) || { pm: true, gm: true, bt: true, ge: true };
+
+    let response = {
+        linked: !!chatId,
+        chatId,
+        settings: prefs,
+        botName: botUsername
+    };
+
+    // If not linked, generate a stateless token
+    if (!chatId) {
+        const token = generateStatelessToken(finalId);
+        const expiresAt = Date.now() + 300000;
+
+        response.access_token = token;
+        response.expires = expiresAt;
+    }
+
+    res.status(200).json(response);
+});
+
 app.delete('/telegram/token', (req, res) => {
     const userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
     const finalId = userId || (AUTO_LICENSE_MODE ? "TFG_GUEST" : null);
