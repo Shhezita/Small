@@ -22,13 +22,17 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || "8478009189:AAHCYK4Dmefy2I8
 const VERCEL_URL = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null;
 
 // Middleware
+app.set('etag', false); // Disable ETags to prevent 304 responses
 app.use(cors({ origin: "*" }));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// Disable caching for API routes
+// Aggressive Cache Disabling
 app.use((req, res, next) => {
-    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+    res.set('Surrogate-Control', 'no-store');
     next();
 });
 
@@ -199,7 +203,6 @@ const handleFreeLicense = (req, res) => {
 };
 
 // Rutas de Licencia
-// Explicitly handle empty key route separately to ensure it matches
 app.all('/check-licence/v2/check/', handleCheckLicense);
 app.all(['/check-licence/check/:key', '/check-licence/v2/check/:key', '/api/v2/check-license'], handleCheckLicense);
 app.all(['/check-licence/free', '/check-licence/v2/free', '/api/v2/free'], handleFreeLicense);
@@ -287,6 +290,7 @@ app.get('/telegram/token', (req, res) => {
     if (!finalId) return res.status(401).json({ error: "Unauthorized" });
 
     const chatId = telegramUsers.get(finalId);
+    // Explicitly set 200 to override any 304 behavior if ETag disabling fails
     res.status(200).json({ linked: !!chatId, chatId });
 });
 
@@ -346,7 +350,7 @@ app.get('/admin/config', (req, res) => {
     });
 });
 
-app.get('/', (req, res) => res.send('Hostile Server V6 (Polished) Active.'));
+app.get('/', (req, res) => res.send('Hostile Server V7 (No-Cache) Active.'));
 
 // Catch-All 404
 app.use((req, res) => {
