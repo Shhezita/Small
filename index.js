@@ -90,7 +90,7 @@ const handleCheckLicense = (req, res) => {
 
     // Estructura exacta que espera el cliente tras desencriptar
     const responseData = {
-        licence: "TFG_VALID_LICENSE_KEY", // Clave dummy
+        licence: "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5emFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6MTIzNDU2Nzg5MA", // Clave dummy
         days: status.days,
         object: {
             valid: status.valid,
@@ -213,3 +213,4 @@ if (require.main === module) {
 }
 
 module.exports = app;
+
