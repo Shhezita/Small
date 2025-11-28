@@ -1,4 +1,3 @@
-
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -22,6 +21,7 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin123";
 // HARDCODED TOKEN
 const TELEGRAM_TOKEN = "8478009189:AAHCYK4Dmefy2I8UL8TwWeB-1aYS6LcSCy0";
 const VERCEL_URL = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null;
+const TOKEN_KEY = CryptoJS.SHA256(TELEGRAM_TOKEN);
 
 // Middleware
 app.set('etag', false);
@@ -68,6 +68,49 @@ const notifyUser = (userId, type, message) => {
 
     bot.sendMessage(chatId, message).catch(err => console.error(`[TELEGRAM] Send failed: ${err.message}`));
     return true;
+};
+
+// ==========================================
+//  STATELESS TOKEN HELPERS
+// ==========================================
+const generateStatelessToken = (userId) => {
+    // Format: "userId|expiry"
+    const expiry = Date.now() + 300000; // 5 minutes
+    const rawData = `${userId}|${expiry}`;
+
+    // Encrypt using AES ECB (no IV needed for randomness here, we rely on expiry for uniqueness/salt effect)
+    // We use the raw key to avoid "Salted__" header overhead
+    const encrypted = CryptoJS.AES.encrypt(rawData, TOKEN_KEY, {
+        mode: CryptoJS.mode.ECB,
+        padding: CryptoJS.pad.Pkcs7
+    });
+
+    // Return Base64 string (standard format)
+    return encrypted.toString();
+};
+
+const verifyStatelessToken = (tokenString) => {
+    try {
+        // Decrypt
+        const decrypted = CryptoJS.AES.decrypt(tokenString, TOKEN_KEY, {
+            mode: CryptoJS.mode.ECB,
+            padding: CryptoJS.pad.Pkcs7
+        });
+
+        const rawData = decrypted.toString(CryptoJS.enc.Utf8);
+        if (!rawData) return null;
+
+        const [userId, expiryStr] = rawData.split('|');
+        if (!userId || !expiryStr) return null;
+
+        const expiry = parseInt(expiryStr);
+        if (Date.now() > expiry) return null;
+
+        return userId;
+    } catch (e) {
+        console.error("Token verification failed:", e.message);
+        return null;
+    }
 };
 
 if (TELEGRAM_TOKEN) {
@@ -370,42 +413,10 @@ app.delete('/pack/:id', (req, res) => {
     packs = packs.filter(p => p._id !== req.params.id);
     res.json({ success: true });
 });
+
 // ==========================================
 //  RUTAS DE TELEGRAM
 // ==========================================
-
-// ==========================================
-//  STATELESS TOKEN HELPERS
-// ==========================================
-const generateStatelessToken = (userId) => {
-    const payload = JSON.stringify({
-        u: userId,
-        e: Date.now() + 300000 // 5 minutes
-    });
-    const encodedPayload = Buffer.from(payload).toString('base64');
-    const signature = CryptoJS.HmacSHA256(encodedPayload, TELEGRAM_TOKEN).toString(CryptoJS.enc.Base64);
-    return `${encodedPayload}.${signature}`;
-};
-
-const verifyStatelessToken = (tokenString) => {
-    try {
-        const parts = tokenString.split('.');
-        if (parts.length !== 2) return null;
-
-        const [encodedPayload, signature] = parts;
-        const expectedSignature = CryptoJS.HmacSHA256(encodedPayload, TELEGRAM_TOKEN).toString(CryptoJS.enc.Base64);
-
-        if (signature !== expectedSignature) return null;
-
-        const payload = JSON.parse(Buffer.from(encodedPayload, 'base64').toString('utf8'));
-        if (Date.now() > payload.e) return null;
-
-        return payload.u;
-    } catch (e) {
-        console.error("Token verification failed:", e.message);
-        return null;
-    }
-};
 
 // Generate Token & Update Settings
 app.post('/telegram/token', (req, res) => {
@@ -505,8 +516,19 @@ app.get('/telegram/webhook', (req, res) => res.send("Telegram Webhook Active"));
 
 // Notify
 app.post('/telegram/notify', (req, res) => {
-    const userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
+    let userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
     const { message, type } = req.body; // Expect 'type' (PM, GM, BT, GE)
+
+    // Verify if userId is actually a token
+    if (userId && (userId.length > 20 || userId.includes('.'))) {
+        const verifiedId = verifyStatelessToken(userId);
+        if (verifiedId) {
+            userId = verifiedId;
+        } else {
+            console.log("[TELEGRAM] Invalid token in notify:", userId);
+            return res.status(401).send(encryptResponse({ error: "Invalid Token" }));
+        }
+    }
 
     if (!userId || userId === 'unknown') return res.status(401).send(encryptResponse({ error: "Unauthorized" }));
 
@@ -520,10 +542,6 @@ app.post('/telegram/notify', (req, res) => {
         res.status(200).send(encryptResponse({ success: false, reason: "Not linked or disabled" }));
     }
 });
-
-// ==========================================
-//  ASSETS & ADMIN
-// ==========================================
 
 // Real 1x1 PNG for Favicon
 const faviconBuffer = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
