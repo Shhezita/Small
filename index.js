@@ -109,12 +109,12 @@ if (TELEGRAM_TOKEN) {
             const token = match[1]; // Capture group 1 is the token if present
 
             if (token) {
-                // Linking logic
-                if (telegramTokens.has(token)) {
-                    const userId = telegramTokens.get(token);
+                // Linking logic with Stateless Token
+                const userId = verifyStatelessToken(token);
+
+                if (userId) {
                     telegramUsers.set(userId, chatId);
                     telegramChats.set(chatId, userId);
-                    telegramTokens.delete(token);
 
                     // Set default prefs if not set
                     if (!userPreferences.has(userId)) {
@@ -122,7 +122,7 @@ if (TELEGRAM_TOKEN) {
                     }
 
                     bot.sendMessage(chatId, "✅ Account successfully linked! You will now receive notifications here.\n\nType /help to see available commands.");
-                    console.log(`[TELEGRAM] Linked chat ${chatId} to user ${userId}`);
+                    console.log(`[TELEGRAM] Linked chat ${chatId} to user ${userId} (Stateless Token)`);
                 } else {
                     bot.sendMessage(chatId, "❌ Invalid or expired token. Please generate a new one from the game settings.");
                 }
@@ -369,126 +369,6 @@ app.delete('/pack/:id', (req, res) => {
     packs = packs.filter(p => p._id !== req.params.id);
     res.json({ success: true });
 });
-
-// ==========================================
-//  RUTAS DE TELEGRAM
-// ==========================================
-
-// Generate Token & Update Settings
-app.post('/telegram/token', (req, res) => {
-    console.log("[TELEGRAM] POST /telegram/token called");
-
-    const userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
-    const finalId = userId || (AUTO_LICENSE_MODE ? "TFG_GUEST" : null);
-
-    if (!finalId) {
-        console.log("[TELEGRAM] Token gen failed: No ID");
-        return res.status(401).json({ error: "Unauthorized" });
-    }
-
-    // Update Preferences if provided
-    const { pm, gm, bt, ge } = req.body;
-    if (pm !== undefined || gm !== undefined || bt !== undefined || ge !== undefined) {
-        const currentPrefs = userPreferences.get(finalId) || { pm: true, gm: true, bt: true, ge: true };
-        userPreferences.set(finalId, {
-            pm: pm !== undefined ? pm : currentPrefs.pm,
-            gm: gm !== undefined ? gm : currentPrefs.gm,
-            bt: bt !== undefined ? bt : currentPrefs.bt,
-            ge: ge !== undefined ? ge : currentPrefs.ge
-        });
-        console.log(`[TELEGRAM] Updated prefs for ${finalId}:`, userPreferences.get(finalId));
-    }
-
-    const prefs = userPreferences.get(finalId) || { pm: true, gm: true, bt: true, ge: true };
-
-    // Check if valid token exists
-    if (userTokens.has(finalId)) {
-        const existing = userTokens.get(finalId);
-        if (existing.expiresAt > Date.now()) {
-            console.log(`[TELEGRAM] Returning existing token ${existing.token} for user ${finalId}`);
-            return res.json({
-                access_token: existing.token,
-                expires: existing.expiresAt,
-                settings: prefs,
-                botName: botUsername
-            });
-        }
-    }
-
-    const token = Math.random().toString(36).substr(2, 8).toUpperCase();
-    const expiresAt = Date.now() + 300000; // 5 min
-
-    telegramTokens.set(token, finalId);
-    userTokens.set(finalId, { token, expiresAt });
-
-    setTimeout(() => {
-        telegramTokens.delete(token);
-        if (userTokens.get(finalId)?.token === token) {
-            userTokens.delete(finalId);
-        }
-    }, 300000);
-
-    console.log(`[TELEGRAM] Generated token ${token} for user ${finalId}`);
-    res.json({
-        access_token: token,
-        expires: expiresAt,
-        settings: prefs,
-        botName: botUsername
-    });
-});
-
-// Get Token (Check if linked or get pending token)
-app.get('/telegram/token', (req, res) => {
-    const userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
-    const finalId = userId || (AUTO_LICENSE_MODE ? "TFG_GUEST" : null);
-
-    if (!finalId) return res.status(401).json({ error: "Unauthorized" });
-
-    const chatId = telegramUsers.get(finalId);
-    const prefs = userPreferences.get(finalId) || { pm: true, gm: true, bt: true, ge: true };
-
-    let response = {
-        linked: !!chatId,
-        chatId,
-        settings: prefs,
-        botName: botUsername
-    };
-
-    // If not linked, check for pending token OR GENERATE ONE
-    if (!chatId) {
-        if (userTokens.has(finalId)) {
-            const existing = userTokens.get(finalId);
-            if (existing.expiresAt > Date.now()) {
-                response.access_token = existing.token;
-                response.expires = existing.expiresAt;
-            }
-        }
-
-        // If still no token, generate one (Client expects it on GET)
-        if (!response.access_token) {
-            const token = Math.random().toString(36).substr(2, 8).toUpperCase();
-            const expiresAt = Date.now() + 300000; // 5 min
-
-            telegramTokens.set(token, finalId);
-            userTokens.set(finalId, { token, expiresAt });
-
-            setTimeout(() => {
-                telegramTokens.delete(token);
-                if (userTokens.get(finalId)?.token === token) {
-                    userTokens.delete(finalId);
-                }
-            }, 300000);
-
-            console.log(`[TELEGRAM] Generated token ${token} for user ${finalId} (via GET)`);
-            response.access_token = token;
-            response.expires = expiresAt;
-        }
-    }
-
-    res.status(200).json(response);
-});
-
-// Delete Token (Unlink)
 app.delete('/telegram/token', (req, res) => {
     const userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
     const finalId = userId || (AUTO_LICENSE_MODE ? "TFG_GUEST" : null);
