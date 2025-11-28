@@ -88,40 +88,39 @@ const generateStatelessToken = (userId, chatId = null) => {
 };
 
 const verifyStatelessToken = (tokenString) => {
+    const parseRaw = (rawData) => {
+        if (!rawData) return null;
+        const [userId, expiryStr, chatId] = rawData.split('|');
+        if (!userId || !expiryStr) return null;
+        const expiry = parseInt(expiryStr);
+        if (Date.now() > expiry) return { error: "Expired" };
+        return { userId, chatId: chatId || null };
+    };
+
+    // 1. Try Hex (New Format)
     try {
-        // Convert Hex string back to CipherParams or WordArray for decryption
         const cipherParams = CryptoJS.lib.CipherParams.create({
             ciphertext: CryptoJS.enc.Hex.parse(tokenString)
         });
-
         const decrypted = CryptoJS.AES.decrypt(cipherParams, TOKEN_KEY, {
             mode: CryptoJS.mode.ECB,
             padding: CryptoJS.pad.Pkcs7
         });
-
         const rawData = decrypted.toString(CryptoJS.enc.Utf8);
-        if (!rawData) {
-            console.error("[TOKEN] Decryption produced empty string. Wrong key or corrupted token.");
-            return null;
-        }
+        if (rawData && rawData.includes('|')) return parseRaw(rawData);
+    } catch (e) { }
 
-        const [userId, expiryStr, chatId] = rawData.split('|');
-        if (!userId || !expiryStr) {
-            console.error(`[TOKEN] Invalid format: ${rawData}`);
-            return null;
-        }
+    // 2. Try Base64 (Legacy Format)
+    try {
+        const decrypted = CryptoJS.AES.decrypt(tokenString, TOKEN_KEY, {
+            mode: CryptoJS.mode.ECB,
+            padding: CryptoJS.pad.Pkcs7
+        });
+        const rawData = decrypted.toString(CryptoJS.enc.Utf8);
+        if (rawData && rawData.includes('|')) return parseRaw(rawData);
+    } catch (e) { }
 
-        const expiry = parseInt(expiryStr);
-        if (Date.now() > expiry) {
-            console.error(`[TOKEN] Expired. Now: ${Date.now()}, Exp: ${expiry}`);
-            return null;
-        }
-
-        return { userId, chatId: chatId || null };
-    } catch (e) {
-        console.error("Token verification failed:", e.message);
-        return null;
-    }
+    return null;
 };
 
 if (TELEGRAM_TOKEN) {
@@ -164,12 +163,16 @@ if (TELEGRAM_TOKEN) {
 
                 const decoded = verifyStatelessToken(token);
                 if (decoded) {
-                    userId = decoded.userId;
+                    if (decoded.error) {
+                        errorReason = decoded.error;
+                    } else {
+                        userId = decoded.userId;
+                    }
                 } else {
                     // Try to diagnose
                     if (token.length < 10) errorReason = "Token too short";
-                    else if (!/^[0-9a-fA-F]+$/.test(token)) errorReason = "Not Hex format";
-                    else errorReason = "Decryption failed (Key mismatch or expired)";
+                    else if (!/^[0-9a-fA-F]+$/.test(token) && !/^[A-Za-z0-9+/=]+$/.test(token)) errorReason = "Invalid format (Not Hex or Base64)";
+                    else errorReason = "Decryption failed (Key mismatch or corrupted)";
                 }
 
                 if (userId) {
