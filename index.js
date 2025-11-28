@@ -300,6 +300,40 @@ app.delete('/pack/:id', async (req, res) => {
 // ==========================================
 //  SISTEMA DE CONFIGURACIONES (NUEVO)
 // ==========================================
+
+// Alias /config para compatibilidad con UI (Import/Export)
+app.post('/config', async (req, res) => {
+    const playerId = req.user.userId !== 'unknown' ? req.user.userId : req.body.playerId;
+
+    if (!playerId) {
+        return res.status(400).json({ error: "Missing playerId" });
+    }
+
+    // Flexibilidad: payload puede estar anidado o ser el body entero
+    const configData = req.body.payload || req.body;
+
+    await savePlayerConfig(playerId, configData);
+    console.log(`[CONFIG] Guardado para ${playerId}`);
+    res.json({ success: true, message: "Config saved" });
+});
+
+app.get('/config', async (req, res) => {
+    const playerId = req.user.userId !== 'unknown' ? req.user.userId : req.query.playerId;
+
+    if (!playerId) {
+        return res.status(400).json({ error: "Missing playerId" });
+    }
+
+    const config = await getPlayerConfig(playerId);
+
+    if (config) {
+        // Devolvemos estructura consistente
+        res.json({ success: true, payload: config });
+    } else {
+        res.status(404).json({ error: "Config not found" });
+    }
+});
+
 app.post('/config/save', async (req, res) => {
     const { playerId, payload } = req.body;
 
