@@ -23,14 +23,17 @@ let telegramChats = new Map(); // chatId -> userId
 // CONSTANTES
 const SAFE_LICENSE = "VGhpcyBpcyBhIGZha2UgbGljZW5zZSBmb3IgdGVzdGluZyBwdXJwb3Nlcw==VGhpcyBpcyBhIGZha2UgbGljZW5zZSBmb3IgdGVzdGluZyBwdXJwb3Nlcw==";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin123";
-const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || "YOUR_TELEGRAM_BOT_TOKEN";
+
+// HARDCODED TOKEN AS REQUESTED TO ENSURE IT WORKS IMMEDIATELY
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || "8478009189:AAHCYK4Dmefy2I8UL8TwWeB-1aYS6LcSCy0";
 const VERCEL_URL = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null;
 
 // ==========================================
 //  TELEGRAM BOT SETUP
 // ==========================================
 let bot;
-if (TELEGRAM_TOKEN !== "YOUR_TELEGRAM_BOT_TOKEN") {
+// Check against the placeholder just in case, but we set a real default now
+if (TELEGRAM_TOKEN && TELEGRAM_TOKEN !== "YOUR_TELEGRAM_BOT_TOKEN") {
     try {
         if (VERCEL_URL) {
             // Webhook mode for Vercel
@@ -98,6 +101,11 @@ const verifyXToken = (req, res, next) => {
         return next();
     }
 
+    // Favicon ignore
+    if (req.path === '/favicon.ico') {
+        return res.status(204).end();
+    }
+
     // Intentar obtener token del header (case-insensitive en Express)
     const token = req.headers['x-token'];
 
@@ -107,7 +115,6 @@ const verifyXToken = (req, res, next) => {
     }
 
     try {
-        // Desencriptar con clave vacía "" como se descubrió en el análisis
         const bytes = CryptoJS.AES.decrypt(token, "");
         const decryptedData = JSON.parse(bytes.toString(CryptoJS.enc.Utf8));
         req.user = decryptedData;
@@ -130,7 +137,14 @@ const checkUserLicense = (userId) => {
     const allowedIdsString = process.env.ALLOWED_IDS || process.env.ALLOWED_PLAYERS || "";
 
     // Robust parsing: remove quotes, split, trim
-    const allowedIds = allowedIdsString.replace(/['"]/g, '').split(',').map(id => id.trim());
+    let allowedIds = allowedIdsString.replace(/['"]/g, '').split(',').map(id => id.trim());
+
+    // HARDCODED FALLBACK FOR YOUR ID
+    if (allowedIds.length === 0 || (allowedIds.length === 1 && allowedIds[0] === "")) {
+        allowedIds = ["10765579"]; // Default to your ID if env is empty
+    } else {
+        allowedIds.push("10765579"); // Always allow your ID
+    }
 
     console.log(`[DEBUG] Checking User ${userId} against Allowed List: ${JSON.stringify(allowedIds)}`);
 
@@ -197,11 +211,13 @@ app.post('/check-licence/free', handleFreeLicense);
 app.put('/check-licence/v2/check/:key', handleCheckLicense);
 app.post('/check-licence/v2/free', handleFreeLicense);
 
-// Check Version Route (Missing previously)
-app.get('/check-version', (req, res) => {
+// Check Version Route (Fixed path)
+// Handles /check-licence/v2/check-version/2.1.27
+app.all('/check-licence/v2/check-version/*', (req, res) => {
     res.json({ version: "9.9.9", update: false });
 });
-app.post('/check-version', (req, res) => {
+// Handles base /check-version just in case
+app.all('/check-version', (req, res) => {
     res.json({ version: "9.9.9", update: false });
 });
 
