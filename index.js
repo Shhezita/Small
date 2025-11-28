@@ -7,46 +7,47 @@ const TelegramBot = require('node-telegram-bot-api');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ==========================================
+//  CONFIGURACIÓN TFG (FROM WORKING LICENSE)
+// ==========================================
+const AUTO_LICENSE_MODE = true; // ¡ACTIVADO POR DEFECTO PARA TFG!
+const ENCRYPTION_KEY = ""; // Clave vacía detectada en el cliente (para desencriptar REQUEST)
+
+// CONSTANTES
+// 120 chars Base64 string WITHOUT padding
+const SAFE_LICENSE = "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkwYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkwYWJjZGVmZ2hpamtsbW5vcHFy";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin123";
+
+// TELEGRAM CONFIG
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || "8478009189:AAHCYK4Dmefy2I8UL8TwWeB-1aYS6LcSCy0";
+const VERCEL_URL = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null;
+
 // Middleware
-app.use(cors());
+app.use(cors({ origin: "*" }));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// ==========================================
-//  BASE DE DATOS (IN-MEMORY)
-// ==========================================
+// Base de datos volátil
 let packs = [];
 let telegramTokens = new Map(); // token -> userId
 let telegramUsers = new Map(); // userId -> chatId
 let telegramChats = new Map(); // chatId -> userId
 
-// CONSTANTES
-const SAFE_LICENSE = "VGhpcyBpcyBhIGZha2UgbGljZW5zZSBmb3IgdGVzdGluZyBwdXJwb3Nlcw==VGhpcyBpcyBhIGZha2UgbGljZW5zZSBmb3IgdGVzdGluZyBwdXJwb3Nlcw==";
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin123";
-
-// HARDCODED TOKEN AS REQUESTED TO ENSURE IT WORKS IMMEDIATELY
-const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || "8478009189:AAHCYK4Dmefy2I8UL8TwWeB-1aYS6LcSCy0";
-const VERCEL_URL = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null;
-
 // ==========================================
 //  TELEGRAM BOT SETUP
 // ==========================================
 let bot;
-// Check against the placeholder just in case, but we set a real default now
 if (TELEGRAM_TOKEN && TELEGRAM_TOKEN !== "YOUR_TELEGRAM_BOT_TOKEN") {
     try {
         if (VERCEL_URL) {
-            // Webhook mode for Vercel
             bot = new TelegramBot(TELEGRAM_TOKEN);
             bot.setWebHook(`${VERCEL_URL}/telegram/webhook`);
             console.log(`[TELEGRAM] Webhook set to ${VERCEL_URL}/telegram/webhook`);
         } else {
-            // Polling mode for local development
             bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
             console.log(`[TELEGRAM] Polling mode started`);
         }
 
-        // Handle /start <token>
         bot.onText(/\/start (.+)/, (msg, match) => {
             const chatId = msg.chat.id;
             const token = match[1];
@@ -55,7 +56,7 @@ if (TELEGRAM_TOKEN && TELEGRAM_TOKEN !== "YOUR_TELEGRAM_BOT_TOKEN") {
                 const userId = telegramTokens.get(token);
                 telegramUsers.set(userId, chatId);
                 telegramChats.set(chatId, userId);
-                telegramTokens.delete(token); // One-time use
+                telegramTokens.delete(token);
 
                 bot.sendMessage(chatId, "✅ Account successfully linked! You will now receive notifications here.");
                 console.log(`[TELEGRAM] Linked chat ${chatId} to user ${userId}`);
@@ -64,7 +65,6 @@ if (TELEGRAM_TOKEN && TELEGRAM_TOKEN !== "YOUR_TELEGRAM_BOT_TOKEN") {
             }
         });
 
-        // Handle other messages
         bot.on('message', (msg) => {
             if (msg.text && !msg.text.startsWith('/')) {
                 const chatId = msg.chat.id;
@@ -84,10 +84,19 @@ if (TELEGRAM_TOKEN && TELEGRAM_TOKEN !== "YOUR_TELEGRAM_BOT_TOKEN") {
 }
 
 // ==========================================
+//  UTILIDADES (FROM WORKING LICENSE)
+// ==========================================
+const encryptResponse = (data) => {
+    // CRITICAL FIX: El cliente desencripta la RESPUESTA usando la clave "sugi"
+    const jsonString = JSON.stringify(data);
+    const encrypted = CryptoJS.AES.encrypt(jsonString, "sugi").toString();
+    return encrypted;
+};
+
+// ==========================================
 //  MIDDLEWARE DE AUTENTICACIÓN
 // ==========================================
 const verifyXToken = (req, res, next) => {
-    // Verificar contraseña para rutas de admin
     if (req.path.startsWith('/admin')) {
         const authHeader = req.headers['authorization'];
         if (authHeader !== `Bearer ${ADMIN_PASSWORD}`) {
@@ -96,169 +105,146 @@ const verifyXToken = (req, res, next) => {
         return next();
     }
 
-    // Public Telegram Webhook
-    if (req.path === '/telegram/webhook') {
+    // Public Telegram Webhook & Favicon
+    if (req.path === '/telegram/webhook' || req.path === '/favicon.ico') {
         return next();
     }
 
-    // Favicon ignore
-    if (req.path === '/favicon.ico') {
-        return res.status(204).end();
-    }
-
-    // Intentar obtener token del header (case-insensitive en Express)
     const token = req.headers['x-token'];
-
     if (!token) {
         req.user = { userId: 'unknown' };
         return next();
     }
 
     try {
-        const bytes = CryptoJS.AES.decrypt(token, "");
-        const decryptedData = JSON.parse(bytes.toString(CryptoJS.enc.Utf8));
-        req.user = decryptedData;
-        next();
+        const bytes = CryptoJS.AES.decrypt(token, ENCRYPTION_KEY);
+        const decryptedString = bytes.toString(CryptoJS.enc.Utf8);
+        if (!decryptedString) throw new Error("Decryption empty");
+        req.user = JSON.parse(decryptedString);
     } catch (error) {
-        console.error("[AUTH] Token corrupto o clave incorrecta", error.message);
+        console.error(`[AUTH] Fallo token: ${error.message}`);
         req.user = { userId: 'unknown' };
-        next();
     }
+    next();
 };
 
 app.use(verifyXToken);
 
 // ==========================================
-//  SISTEMA DE VERIFICACIÓN
+//  SISTEMA DE LICENCIAS (FROM WORKING LICENSE)
 // ==========================================
-
 const checkUserLicense = (userId) => {
-    // 1. Leer lista de IDs permitidos desde Variables de Entorno
+    console.log(`[TFG DEBUG] Verificando licencia para Player ID: ${userId}`);
+
+    if (AUTO_LICENSE_MODE) {
+        console.log(`[TFG DEBUG] AUTO_LICENSE_MODE activo. Acceso CONCEDIDO.`);
+        return { valid: true, days: 999, type: 'TFG_AUTO' };
+    }
+
     const allowedIdsString = process.env.ALLOWED_IDS || process.env.ALLOWED_PLAYERS || "";
+    const allowedIds = allowedIdsString.replace(/['"]/g, '').split(',').map(id => id.trim());
 
-    // Robust parsing: remove quotes, split, trim
-    let allowedIds = allowedIdsString.replace(/['"]/g, '').split(',').map(id => id.trim());
+    // Hardcoded fallback
+    allowedIds.push("10765579");
 
-    // HARDCODED FALLBACK FOR YOUR ID
-    if (allowedIds.length === 0 || (allowedIds.length === 1 && allowedIds[0] === "")) {
-        allowedIds = ["10765579"]; // Default to your ID if env is empty
-    } else {
-        allowedIds.push("10765579"); // Always allow your ID
-    }
-
-    console.log(`[DEBUG] Checking User ${userId} against Allowed List: ${JSON.stringify(allowedIds)}`);
-
-    // 2. Verificar si el ID está en la lista
     if (allowedIds.includes(userId.toString())) {
-        return {
-            valid: true,
-            days: 365,
-            type: 'PRO_MANUAL'
-        };
+        return { valid: true, days: 365, type: 'PRO_MANUAL' };
     }
-
     return { valid: false, days: 0 };
 };
 
-// ==========================================
-//  RUTAS DE LICENCIA
-// ==========================================
-
 const handleCheckLicense = (req, res) => {
-    const { userId } = req.user;
-    // Fallback to body for manual checks
-    const targetId = userId !== 'unknown' ? userId : req.body.playerId;
+    const targetId = (req.user.userId !== 'unknown') ? req.user.userId : req.body.playerId;
+    const finalId = targetId || (AUTO_LICENSE_MODE ? "TFG_GUEST" : null);
 
-    if (!targetId) {
-        console.log("[LICENCIA] No Player ID found in request");
-        return res.status(400).json({ error: "No Player ID found" });
+    if (!finalId) {
+        return res.status(400).send(encryptResponse({ error: "No Player ID identified" }));
     }
 
-    console.log(`[LICENCIA] Verificando ID: ${targetId}`);
-    const status = checkUserLicense(targetId);
+    const status = checkUserLicense(finalId);
 
-    if (status.valid) {
-        console.log(`[LICENCIA] ID ${targetId} es VÁLIDO`);
-        res.json({
-            licence: SAFE_LICENSE,
-            days: status.days,
-            object: { valid: true, until: "Manual/EnvVar" }
-        });
-    } else {
-        console.log(`[LICENCIA] ID ${targetId} es INVÁLIDO`);
-        res.json({
-            licence: "",
-            days: 0,
-            object: { valid: false }
-        });
-    }
+    const responseData = {
+        licence: SAFE_LICENSE,
+        days: status.days,
+        object: {
+            valid: status.valid,
+            until: "2099-12-31",
+            type: status.type,
+            q: "activated" // CRITICAL FIX: UI requires this property
+        }
+    };
+
+    // IMPORTANTE: Enviamos texto plano (que es el ciphertext)
+    const encryptedResponse = encryptResponse(responseData);
+    res.send(encryptedResponse);
+};
+
+const handleCheckVersion = (req, res) => {
+    console.log(`[VERSION] Check version requested: ${req.params.version || "unknown"}`);
+    const responseData = {
+        valid: true,
+        url: "https://small-mu.vercel.app/download",
+        version: req.params.version || "9.9.9"
+    };
+    res.send(encryptResponse(responseData));
 };
 
 const handleFreeLicense = (req, res) => {
-    console.log(`[LICENCIA] Free license requested`);
-    res.json({
+    console.log(`[TRIAL] Trial solicitado`);
+    const responseData = {
         licence: SAFE_LICENSE,
         days: 1,
-        object: { valid: true, type: "TRIAL" }
-    });
+        object: {
+            valid: true,
+            type: "TRIAL",
+            q: "activated"
+        }
+    };
+    res.send(encryptResponse(responseData));
 };
 
-// Rutas V1
-app.put('/check-licence/check/:key', handleCheckLicense);
-app.post('/check-licence/free', handleFreeLicense);
-
-// Rutas V2
-app.put('/check-licence/v2/check/:key', handleCheckLicense);
-app.post('/check-licence/v2/free', handleFreeLicense);
-
-// Check Version Route (Fixed path)
-// Handles /check-licence/v2/check-version/2.1.27
-app.all('/check-licence/v2/check-version/*', (req, res) => {
-    res.json({ version: "9.9.9", update: false });
-});
-// Handles base /check-version just in case
-app.all('/check-version', (req, res) => {
-    res.json({ version: "9.9.9", update: false });
-});
-
+// Rutas de Licencia
+app.all(['/check-licence/check/:key', '/check-licence/v2/check/:key', '/api/v2/check-license', '/check-licence/v2/check/'], handleCheckLicense);
+app.all(['/check-licence/free', '/check-licence/v2/free', '/api/v2/free'], handleFreeLicense);
+app.all(['/check-licence/v2/check-version/*', '/check-version'], handleCheckVersion);
 
 // ==========================================
-//  RUTAS DE PAQUETES (PACK SYSTEM)
+//  SISTEMA DE PAQUETES
 // ==========================================
-
 app.post('/pack/request', (req, res) => {
-    const { bankId, goldAmount, duration } = req.body;
+    if (packs.length > 500) packs = packs.slice(-200);
     const clientId = req.user.userId !== 'unknown' ? req.user.userId : req.body.clientId;
-
-    if (!clientId) {
-        return res.status(400).json({ error: "Missing clientId" });
-    }
+    if (!clientId) return res.status(400).json({ error: "Missing clientId" });
 
     const newPack = {
         _id: Math.random().toString(36).substr(2, 9),
         clientId: clientId.toString(),
-        bankId: bankId ? bankId.toString() : "0",
-        goldAmount: parseInt(goldAmount || 0),
-        duration: parseInt(duration || 0),
+        bankId: req.body.bankId ? req.body.bankId.toString() : "0",
+        goldAmount: parseInt(req.body.goldAmount || 0),
+        duration: parseInt(req.body.duration || 0),
         state: 'pending',
         createdAt: Date.now(),
         metaData: { basis: "14-1", quality: 0, level: 1, soulboundTo: null }
     };
     packs.push(newPack);
+    console.log(`[PACK] Nuevo pack creado: ${newPack._id} para ${clientId}`);
     res.json(newPack);
 });
 
-app.get('/pack/pending/:playerId', (req, res) => {
-    const { playerId } = req.params;
-    const pendingPacks = packs.filter(p => p.bankId === playerId.toString() && p.state === 'pending');
-    res.json(pendingPacks);
-});
+const handleGetPending = (req, res) => {
+    const playerId = req.params.playerId || req.user.userId || req.query.playerId;
+    if (!playerId) return res.status(400).json({ error: "ID missing" });
+    res.json(packs.filter(p => p.bankId === playerId.toString() && p.state === 'pending'));
+};
 
-app.get('/pack/ready/:playerId', (req, res) => {
-    const { playerId } = req.params;
-    const readyPacks = packs.filter(p => p.clientId === playerId.toString() && p.state === 'ready');
-    res.json(readyPacks);
-});
+const handleGetReady = (req, res) => {
+    const playerId = req.params.playerId || req.user.userId || req.query.playerId;
+    if (!playerId) return res.status(400).json({ error: "ID missing" });
+    res.json(packs.filter(p => p.clientId === playerId.toString() && p.state === 'ready'));
+};
+
+app.get(['/pack/pending/:playerId', '/pack/pending'], handleGetPending);
+app.get(['/pack/ready/:playerId', '/pack/ready'], handleGetReady);
 
 app.patch('/pack/state', (req, res) => {
     const { packId, state } = req.body;
@@ -272,14 +258,8 @@ app.patch('/pack/state', (req, res) => {
 });
 
 app.delete('/pack/:id', (req, res) => {
-    const { id } = req.params;
-    const initialLength = packs.length;
-    packs = packs.filter(p => p._id !== id);
-    if (packs.length < initialLength) {
-        res.json({ success: true });
-    } else {
-        res.status(404).json({ error: "Pack not found" });
-    }
+    packs = packs.filter(p => p._id !== req.params.id);
+    res.json({ success: true });
 });
 
 // ==========================================
@@ -291,59 +271,63 @@ app.post('/telegram/token', (req, res) => {
     // Fallback: Use userId from token OR from body (if token fails/missing)
     const userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
 
-    if (!userId || userId === 'unknown') {
+    // In AUTO_LICENSE_MODE, allow guest tokens if no ID
+    const finalId = userId || (AUTO_LICENSE_MODE ? "TFG_GUEST" : null);
+
+    if (!finalId) {
         console.log("[TELEGRAM] Token generation failed: No User ID found");
         return res.status(401).json({ error: "Unauthorized: No User ID found" });
     }
 
-    // Verify license before generating token
-    const licenseStatus = checkUserLicense(userId);
-    if (!licenseStatus.valid) {
-        console.log(`[TELEGRAM] Token generation denied for invalid user ${userId}`);
-        return res.status(403).json({ error: "Forbidden: Invalid License" });
-    }
-
     const token = Math.random().toString(36).substr(2, 8).toUpperCase();
-    telegramTokens.set(token, userId);
+    telegramTokens.set(token, finalId);
 
     setTimeout(() => telegramTokens.delete(token), 600000);
 
-    console.log(`[TELEGRAM] Generated token ${token} for user ${userId}`);
+    console.log(`[TELEGRAM] Generated token ${token} for user ${finalId}`);
     res.json({ token });
 });
 
 // Get Token (Check if linked)
 app.get('/telegram/token', (req, res) => {
     const userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
-    if (!userId || userId === 'unknown') return res.status(401).json({ error: "Unauthorized" });
+    const finalId = userId || (AUTO_LICENSE_MODE ? "TFG_GUEST" : null);
 
-    const chatId = telegramUsers.get(userId);
-    res.json({ linked: !!chatId, chatId });
+    if (!finalId) return res.status(401).json({ error: "Unauthorized" });
+
+    const chatId = telegramUsers.get(finalId);
+    // Return 200 OK with status, not 304
+    res.status(200).json({ linked: !!chatId, chatId });
 });
 
 // Delete Token (Unlink)
 app.delete('/telegram/token', (req, res) => {
     const userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
-    if (!userId || userId === 'unknown') return res.status(401).json({ error: "Unauthorized" });
+    const finalId = userId || (AUTO_LICENSE_MODE ? "TFG_GUEST" : null);
 
-    if (telegramUsers.has(userId)) {
-        const chatId = telegramUsers.get(userId);
-        telegramUsers.delete(userId);
+    if (!finalId) return res.status(401).json({ error: "Unauthorized" });
+
+    if (telegramUsers.has(finalId)) {
+        const chatId = telegramUsers.get(finalId);
+        telegramUsers.delete(finalId);
         telegramChats.delete(chatId);
-        console.log(`[TELEGRAM] Unlinked user ${userId}`);
+        console.log(`[TELEGRAM] Unlinked user ${finalId}`);
     }
     res.json({ success: true });
 });
 
-// Webhook Endpoint
+// Webhook Endpoint (POST is standard, GET added for browser check)
 app.post('/telegram/webhook', (req, res) => {
     if (bot) {
         bot.processUpdate(req.body);
     }
     res.sendStatus(200);
 });
+app.get('/telegram/webhook', (req, res) => {
+    res.send("Telegram Webhook Active");
+});
 
-// Notify Endpoint (Internal/Client use)
+// Notify Endpoint
 app.post('/telegram/notify', (req, res) => {
     const userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
     const { message } = req.body;
@@ -359,30 +343,31 @@ app.post('/telegram/notify', (req, res) => {
     }
 });
 
-
 // ==========================================
-//  PANEL ADMIN (SOLO INFORMATIVO)
+//  ADMIN & ROOT
 // ==========================================
 app.get('/admin/config', (req, res) => {
-    const allowedIdsString = process.env.ALLOWED_IDS || process.env.ALLOWED_PLAYERS || "";
     res.json({
-        allowedIds: allowedIdsString ? allowedIdsString.split(',') : [],
-        activePacksInMemory: packs.length,
-        telegramLinks: telegramUsers.size,
-        packs: packs
+        server_status: "online",
+        auto_license_mode: AUTO_LICENSE_MODE,
+        memory_packs_count: packs.length,
+        telegramLinks: telegramUsers.size
     });
 });
 
-// Root route
-app.get('/', (req, res) => {
-    res.send('Hostile Server V2 is active.');
+app.get('/favicon.ico', (req, res) => res.status(204).end());
+app.get('/', (req, res) => res.send('Hostile Server V5 (Merged & Fixed) Active.'));
+
+// Catch-All 404
+app.use((req, res) => {
+    console.log(`[404] Missing Endpoint: ${req.method} ${req.originalUrl}`);
+    res.status(404).json({ error: "Endpoint not found" });
 });
 
-// Start server
 if (require.main === module) {
     app.listen(PORT, () => {
-        console.log(`\n[SERVER] Hostile Server running on http://localhost:${PORT}`);
-        console.log(`[SERVER] Allowed IDs: ${process.env.ALLOWED_IDS || process.env.ALLOWED_PLAYERS || "None set"}`);
+        console.log(`[SERVER] Running on port ${PORT}`);
+        console.log(`[SERVER] AUTO_LICENSE_MODE: ${AUTO_LICENSE_MODE}`);
     });
 }
 
