@@ -1,8 +1,6 @@
 const express = require('express');
-const bodyParser = require('body-parser');
 const cors = require('cors');
 const CryptoJS = require("crypto-js");
-const TelegramBot = require('node-telegram-bot-api');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -10,262 +8,28 @@ const PORT = process.env.PORT || 3000;
 // ==========================================
 //  CONFIGURACIÓN TFG
 // ==========================================
-const AUTO_LICENSE_MODE = true;
-const ENCRYPTION_KEY = "sugi";
+const AUTO_LICENSE_MODE = true; // ¡ACTIVADO POR DEFECTO PARA TFG!
+const ENCRYPTION_KEY = ""; // Clave vacía detectada en el cliente (para desencriptar REQUEST)
 
 // CONSTANTES
+// 120 chars Base64 string WITHOUT padding (multiple of 3 bytes = 4 chars, so 90 bytes -> 120 chars)
+// "abcdefghijklmnopqrstuvwxyz1234567890" repeated
 const SAFE_LICENSE = "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkwYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkwYWJjZGVmZ2hpamtsbW5vcHFy";
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin123";
-
-// TELEGRAM CONFIG
-// HARDCODED TOKEN
-const TELEGRAM_TOKEN = "8478009189:AAHCYK4Dmefy2I8UL8TwWeB-1aYS6LcSCy0";
-const VERCEL_URL = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null;
-const TOKEN_KEY = CryptoJS.SHA256(TELEGRAM_TOKEN);
 
 // Middleware
-app.set('etag', false);
 app.use(cors({ origin: "*" }));
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
-
-// Aggressive Cache Disabling
-app.use((req, res, next) => {
-    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-    res.set('Pragma', 'no-cache');
-    res.set('Expires', '0');
-    res.set('Surrogate-Control', 'no-store');
-    next();
-});
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // Base de datos volátil
 let packs = [];
-let telegramTokens = new Map(); // token -> userId
-let userTokens = new Map(); // userId -> { token, expiresAt }
-let telegramUsers = new Map(); // userId -> chatId
-let telegramChats = new Map(); // chatId -> userId
-let userPreferences = new Map(); // userId -> { pm: bool, gm: bool, bt: bool, ge: bool }
-let botStatus = "Initializing...";
-let botUsername = "Unknown";
-
-// ==========================================
-//  TELEGRAM BOT SETUP
-// ==========================================
-let bot;
-
-// Helper to notify user based on preferences
-const notifyUser = (userId, type, message) => {
-    const chatId = telegramUsers.get(userId);
-    if (!chatId || !bot) return false;
-
-    const prefs = userPreferences.get(userId) || { pm: true, gm: true, bt: true, ge: true };
-
-    // Check preferences
-    if (type === 'PM' && !prefs.pm) return false;
-    if (type === 'GM' && !prefs.gm) return false;
-    if (type === 'BT' && !prefs.bt) return false;
-    if (type === 'GE' && !prefs.ge) return false;
-
-    bot.sendMessage(chatId, message).catch(err => console.error(`[TELEGRAM] Send failed: ${err.message}`));
-    return true;
-};
-
-// ==========================================
-//  STATELESS TOKEN HELPERS
-// ==========================================
-const generateStatelessToken = (userId, chatId = null) => {
-    // Format: "userId|expiry|chatId"
-    const expiry = Date.now() + 5184000000; // 60 days
-    const rawData = `${userId}|${expiry}|${chatId || ''}`;
-
-    // Encrypt using AES ECB
-    const encrypted = CryptoJS.AES.encrypt(rawData, TOKEN_KEY, {
-        mode: CryptoJS.mode.ECB,
-        padding: CryptoJS.pad.Pkcs7
-    });
-
-    return encrypted.toString();
-};
-
-const verifyStatelessToken = (tokenString) => {
-    try {
-        const decrypted = CryptoJS.AES.decrypt(tokenString, TOKEN_KEY, {
-            mode: CryptoJS.mode.ECB,
-            padding: CryptoJS.pad.Pkcs7
-        });
-
-        const rawData = decrypted.toString(CryptoJS.enc.Utf8);
-        if (!rawData) return null;
-
-        const [userId, expiryStr, chatId] = rawData.split('|');
-        if (!userId || !expiryStr) return null;
-
-        const expiry = parseInt(expiryStr);
-        if (Date.now() > expiry) return null;
-
-        return { userId, chatId: chatId || null };
-    } catch (e) {
-        console.error("Token verification failed:", e.message);
-        return null;
-    }
-};
-
-if (TELEGRAM_TOKEN) {
-    try {
-        if (VERCEL_URL) {
-            bot = new TelegramBot(TELEGRAM_TOKEN);
-            bot.setWebHook(`${VERCEL_URL}/telegram/webhook`);
-            console.log(`[TELEGRAM] Webhook set to ${VERCEL_URL}/telegram/webhook`);
-        } else {
-            bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
-            console.log(`[TELEGRAM] Polling mode started`);
-        }
-
-        // VERIFY CONNECTION
-        bot.getMe().then((me) => {
-            botStatus = "Online";
-            botUsername = me.username;
-            console.log(`[TELEGRAM] Bot Connected! Name: ${me.first_name}, Username: @${me.username}`);
-
-            // Register commands
-            bot.setMyCommands([
-                { command: '/start', description: 'Start the bot or link account' },
-                { command: '/status', description: 'Check connection status' },
-                { command: '/unlink', description: 'Unlink your account' },
-                { command: '/help', description: 'Show help message' }
-            ]).then(() => {
-                console.log("[TELEGRAM] Commands registered successfully");
-            }).catch((err) => {
-                console.error(`[TELEGRAM] Failed to register commands: ${err.message}`);
-            });
-
-        }).catch((err) => {
-            botStatus = `Error: ${err.message}`;
-            console.error(`[TELEGRAM] Failed to connect: ${err.message}`);
-        });
-
-        // Command: /start (with or without token)
-        bot.onText(/\/start(?: (.+))?/, (msg, match) => {
-            const chatId = msg.chat.id;
-            const token = match[1]; // Capture group 1 is the token if present
-
-            if (token) {
-                // Linking logic with Stateless Token
-                const decoded = verifyStatelessToken(token);
-
-                if (decoded && decoded.userId) {
-                    const userId = decoded.userId;
-                    telegramUsers.set(userId, chatId);
-                    telegramChats.set(chatId, userId);
-
-                    // Set default prefs if not set
-                    if (!userPreferences.has(userId)) {
-                        userPreferences.set(userId, { pm: true, gm: true, bt: true, ge: true });
-                    }
-
-                    // GENERATE NEW TOKEN WITH CHAT ID
-                    const newToken = generateStatelessToken(userId, chatId);
-
-                    bot.sendMessage(chatId, `✅ *Account Linked!*
-                    
-⚠️ *IMPORTANT ACTION REQUIRED* ⚠️
-Since the server is stateless (Vercel), you MUST update your game settings with this new code to receive notifications:
-
-\`${newToken}\`
-
-1. Copy the code above.
-2. Go to Game Settings -> Telegram.
-3. Paste it into the "Access Token" field (if available) or re-save.
-(If you cannot paste it, notifications might not work reliably on Vercel).`, { parse_mode: 'Markdown' });
-
-                    console.log(`[TELEGRAM] Linked chat ${chatId} to user ${userId} (Stateless Token)`);
-                } else {
-                    bot.sendMessage(chatId, "❌ Invalid or expired token. Please generate a new one from the game settings.");
-                }
-            } else {
-                // Just /start without token
-                if (telegramChats.has(chatId)) {
-                    bot.sendMessage(chatId, "👋 You are already linked! Type /status to check your connection or /help for commands.");
-                } else {
-                    bot.sendMessage(chatId, "👋 Welcome! To link your account, please go to the game settings, click 'Get Access Token', and then click the 'Open Telegram Bot' link.");
-                }
-            }
-        });
-
-        // Command: /help
-        bot.onText(/\/help/, (msg) => {
-            const chatId = msg.chat.id;
-            const helpText = `
-🤖 *Bot Commands:*
-
-/start - Start the bot or link account
-/status - Check connection status
-/unlink - Unlink your account
-/help - Show this help message
-            `;
-            bot.sendMessage(chatId, helpText, { parse_mode: 'Markdown' });
-        });
-
-        // Command: /status
-        bot.onText(/\/status/, (msg) => {
-            const chatId = msg.chat.id;
-            if (telegramChats.has(chatId)) {
-                const userId = telegramChats.get(chatId);
-                const prefs = userPreferences.get(userId);
-                let prefText = "Unknown";
-                if (prefs) {
-                    prefText = `
-- Private Messages: ${prefs.pm ? '✅' : '❌'}
-- Guild Messages: ${prefs.gm ? '✅' : '❌'}
-- Bot Errors: ${prefs.bt ? '✅' : '❌'}
-- Gold Expire: ${prefs.ge ? '✅' : '❌'}
-                    `;
-                }
-                bot.sendMessage(chatId, `✅ *Linked*\nUser ID: \`${userId}\`\n\n*Preferences:*${prefText}`, { parse_mode: 'Markdown' });
-            } else {
-                bot.sendMessage(chatId, "❌ Not linked. Please link your account from the game settings.");
-            }
-        });
-
-        // Command: /unlink
-        bot.onText(/\/unlink/, (msg) => {
-            const chatId = msg.chat.id;
-            if (telegramChats.has(chatId)) {
-                const userId = telegramChats.get(chatId);
-                telegramUsers.delete(userId);
-                telegramChats.delete(chatId);
-                userPreferences.delete(userId); // Optional: clear prefs on unlink
-                bot.sendMessage(chatId, "🔓 Account unlinked. You will no longer receive notifications.");
-                console.log(`[TELEGRAM] Unlinked chat ${chatId} (User ${userId})`);
-            } else {
-                bot.sendMessage(chatId, "You are not linked to any account.");
-            }
-        });
-
-        bot.on('message', (msg) => {
-            if (msg.text && !msg.text.startsWith('/')) {
-                const chatId = msg.chat.id;
-                const userId = telegramChats.get(chatId);
-                if (userId) {
-                    // Echo or handle command
-                    console.log(`[TELEGRAM] Msg from ${userId}: ${msg.text}`);
-                }
-            }
-        });
-
-    } catch (error) {
-        botStatus = `Init Error: ${error.message}`;
-        console.error("[TELEGRAM] Error initializing bot:", error.message);
-    }
-} else {
-    botStatus = "Disabled (No Token)";
-    console.log("[TELEGRAM] No token provided. Bot disabled.");
-}
 
 // ==========================================
 //  UTILIDADES
 // ==========================================
 const encryptResponse = (data) => {
+    // El cliente espera que la respuesta sea un string encriptado (ciphertext)
+    // CRITICAL FIX: El cliente desencripta la RESPUESTA usando la clave "sugi"
     const jsonString = JSON.stringify(data);
     const encrypted = CryptoJS.AES.encrypt(jsonString, "sugi").toString();
     return encrypted;
@@ -275,13 +39,7 @@ const encryptResponse = (data) => {
 //  MIDDLEWARE DE AUTENTICACIÓN
 // ==========================================
 const verifyXToken = (req, res, next) => {
-    if (req.path.startsWith('/admin') || req.path.startsWith('/telegram/status')) {
-        return next();
-    }
-
-    if (req.path === '/telegram/webhook' || req.path === '/favicon.ico' || req.path === '/favicon.png') {
-        return next();
-    }
+    if (req.path.startsWith('/admin')) return next();
 
     const token = req.headers['x-token'];
     if (!token) {
@@ -290,6 +48,7 @@ const verifyXToken = (req, res, next) => {
     }
 
     try {
+        // El cliente encripta el REQUEST con clave vacía ""
         const bytes = CryptoJS.AES.decrypt(token, ENCRYPTION_KEY);
         const decryptedString = bytes.toString(CryptoJS.enc.Utf8);
         if (!decryptedString) throw new Error("Decryption empty");
@@ -307,13 +66,15 @@ app.use(verifyXToken);
 //  SISTEMA DE LICENCIAS
 // ==========================================
 const checkUserLicense = (userId) => {
+    console.log(`[TFG DEBUG] Verificando licencia para Player ID: ${userId}`);
+
     if (AUTO_LICENSE_MODE) {
+        console.log(`[TFG DEBUG] AUTO_LICENSE_MODE activo. Acceso CONCEDIDO.`);
         return { valid: true, days: 999, type: 'TFG_AUTO' };
     }
 
     const allowedIdsString = process.env.ALLOWED_IDS || process.env.ALLOWED_PLAYERS || "";
-    const allowedIds = allowedIdsString.replace(/['"]/g, '').split(',').map(id => id.trim());
-    allowedIds.push("10765579");
+    const allowedIds = allowedIdsString.split(',').map(id => id.trim());
 
     if (allowedIds.includes(userId.toString())) {
         return { valid: true, days: 365, type: 'PRO_MANUAL' };
@@ -323,6 +84,8 @@ const checkUserLicense = (userId) => {
 
 const handleCheckLicense = (req, res) => {
     const targetId = (req.user.userId !== 'unknown') ? req.user.userId : req.body.playerId;
+
+    // En modo TFG, si no hay ID, asumimos uno dummy para que pase
     const finalId = targetId || (AUTO_LICENSE_MODE ? "TFG_GUEST" : null);
 
     if (!finalId) {
@@ -331,47 +94,54 @@ const handleCheckLicense = (req, res) => {
 
     const status = checkUserLicense(finalId);
 
+    // Estructura exacta que espera el cliente tras desencriptar
     const responseData = {
-        licence: SAFE_LICENSE,
+        licence: SAFE_LICENSE, // Use the safe, padding-free string
         days: status.days,
         object: {
             valid: status.valid,
             until: "2099-12-31",
             type: status.type,
-            q: "activated"
+            q: "activated" // CRITICAL FIX: UI requires this property
         }
     };
 
-    res.send(encryptResponse(responseData));
+    // IMPORTANTE: Enviamos texto plano (que es el ciphertext)
+    const encryptedResponse = encryptResponse(responseData);
+    res.send(encryptedResponse);
 };
 
+// Manejador para Check Version (Nuevo endpoint detectado)
 const handleCheckVersion = (req, res) => {
+    console.log(`[VERSION] Check version requested: ${req.params.version}`);
+    // Respondemos siempre que es válida
     const responseData = {
         valid: true,
-        url: "https://small-mu.vercel.app/download",
-        version: req.params.version || "9.9.9"
+        url: "https://small-mu.vercel.app/download", // Dummy URL
+        version: req.params.version
     };
     res.send(encryptResponse(responseData));
 };
 
 const handleFreeLicense = (req, res) => {
+    console.log(`[TRIAL] Trial solicitado`);
     const responseData = {
         licence: SAFE_LICENSE,
         days: 1,
         object: {
             valid: true,
             type: "TRIAL",
-            q: "activated"
+            q: "activated" // CRITICAL FIX
         }
     };
     res.send(encryptResponse(responseData));
 };
 
-// Rutas de Licencia
-app.all('/check-licence/v2/check/', handleCheckLicense);
-app.all(['/check-licence/check/:key', '/check-licence/v2/check/:key', '/api/v2/check-license'], handleCheckLicense);
+// Rutas
+// Agregamos ruta para cuando NO hay key (check/) y version check
+app.all(['/check-licence/check/:key', '/check-licence/v2/check/:key', '/api/v2/check-license', '/check-licence/v2/check/'], handleCheckLicense);
 app.all(['/check-licence/free', '/check-licence/v2/free', '/api/v2/free'], handleFreeLicense);
-app.all(['/check-licence/v2/check-version/*', '/check-version'], handleCheckVersion);
+app.all(['/check-licence/v2/check-version/:version'], handleCheckVersion);
 
 // ==========================================
 //  SISTEMA DE PAQUETES
@@ -392,7 +162,8 @@ app.post('/pack/request', (req, res) => {
         metaData: { basis: "14-1", quality: 0, level: 1, soulboundTo: null }
     };
     packs.push(newPack);
-    res.json(newPack);
+    console.log(`[PACK] Nuevo pack creado: ${newPack._id} para ${clientId}`);
+    res.json(newPack); // Los packs parece que NO van encriptados en la respuesta, según análisis previo
 });
 
 const handleGetPending = (req, res) => {
@@ -427,187 +198,45 @@ app.delete('/pack/:id', (req, res) => {
 });
 
 // ==========================================
-//  RUTAS DE TELEGRAM
+//  ADMIN
 // ==========================================
-
-// Generate Token & Update Settings
-app.post('/telegram/token', (req, res) => {
-    console.log(`[TELEGRAM] POST /telegram/token called. User: ${JSON.stringify(req.user)}, Body: ${JSON.stringify(req.body)}`);
-
-    const userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
-    const finalId = userId || (AUTO_LICENSE_MODE ? "TFG_GUEST" : null);
-
-    console.log(`[TELEGRAM] Token Gen for ID: ${finalId} (Original: ${userId})`);
-
-    if (!finalId) {
-        console.log("[TELEGRAM] Token gen failed: No ID");
-        return res.status(401).json({ error: "Unauthorized" });
-    }
-
-    // Update Preferences if provided
-    const { pm, gm, bt, ge } = req.body;
-    if (pm !== undefined || gm !== undefined || bt !== undefined || ge !== undefined) {
-        const currentPrefs = userPreferences.get(finalId) || { pm: true, gm: true, bt: true, ge: true };
-        userPreferences.set(finalId, {
-            pm: pm !== undefined ? pm : currentPrefs.pm,
-            gm: gm !== undefined ? gm : currentPrefs.gm,
-            bt: bt !== undefined ? bt : currentPrefs.bt,
-            ge: ge !== undefined ? ge : currentPrefs.ge
-        });
-        console.log(`[TELEGRAM] Updated prefs for ${finalId}:`, userPreferences.get(finalId));
-    }
-
-    const prefs = userPreferences.get(finalId) || { pm: true, gm: true, bt: true, ge: true };
-
-    // Generate Stateless Token
-    const token = generateStatelessToken(finalId);
-    const expiresAt = Date.now() + 5184000000; // 60 days
-
-    console.log(`[TELEGRAM] Generated stateless token for user ${finalId}`);
-    res.json({
-        access_token: token,
-        expires: expiresAt,
-        settings: prefs,
-        botName: botUsername
-    });
-});
-
-// Get Token (Check if linked or get pending token)
-app.get('/telegram/token', (req, res) => {
-    const userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
-    const finalId = userId || (AUTO_LICENSE_MODE ? "TFG_GUEST" : null);
-
-    if (!finalId) return res.status(401).json({ error: "Unauthorized" });
-
-    const chatId = telegramUsers.get(finalId);
-    const prefs = userPreferences.get(finalId) || { pm: true, gm: true, bt: true, ge: true };
-
-    let response = {
-        linked: !!chatId,
-        chatId,
-        settings: prefs,
-        botName: botUsername
-    };
-
-    // If not linked, generate a stateless token
-    if (!chatId) {
-        const token = generateStatelessToken(finalId);
-        const expiresAt = Date.now() + 5184000000; // 60 days
-
-        response.access_token = token;
-        response.expires = expiresAt;
-    }
-
-    res.status(200).json(response);
-});
-
-app.delete('/telegram/token', (req, res) => {
-    const userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
-    const finalId = userId || (AUTO_LICENSE_MODE ? "TFG_GUEST" : null);
-
-    if (!finalId) return res.status(401).send(encryptResponse({ error: "Unauthorized" }));
-
-    if (telegramUsers.has(finalId)) {
-        const chatId = telegramUsers.get(finalId);
-        telegramUsers.delete(finalId);
-        telegramChats.delete(chatId);
-    }
-    if (userTokens.has(finalId)) {
-        const { token } = userTokens.get(finalId);
-        telegramTokens.delete(token);
-        userTokens.delete(finalId);
-    }
-
-    res.send(encryptResponse({ success: true }));
-});
-
-// Webhook
-app.post('/telegram/webhook', (req, res) => {
-    if (bot) bot.processUpdate(req.body);
-    res.sendStatus(200);
-});
-app.get('/telegram/webhook', (req, res) => res.send("Telegram Webhook Active"));
-
-// Notify
-app.post('/telegram/notify', (req, res) => {
-    console.log(`[TELEGRAM] Notify called. Body: ${JSON.stringify(req.body)}`);
-    let userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
-    const { message, type } = req.body; // Expect 'type' (PM, GM, BT, GE)
-    let explicitChatId = null;
-
-    // Verify if userId is actually a token
-    if (userId && (userId.length > 20 || userId.includes('.'))) {
-        const decoded = verifyStatelessToken(userId);
-        if (decoded && decoded.userId) {
-            console.log(`[TELEGRAM] Token verified. Resolved ID: ${decoded.userId}, ChatID: ${decoded.chatId}`);
-            userId = decoded.userId;
-            explicitChatId = decoded.chatId;
-        } else {
-            console.log("[TELEGRAM] Invalid token in notify:", userId);
-            return res.status(401).send(encryptResponse({ error: "Invalid Token" }));
-        }
-    }
-
-    console.log(`[TELEGRAM] Processing notify for UserID: ${userId}`);
-
-    if (!userId || userId === 'unknown') return res.status(401).send(encryptResponse({ error: "Unauthorized" }));
-
-    // Use default type 'PM' if not specified
-    const msgType = type || 'PM';
-
-    // Use explicit ChatID if available (Stateless mode), otherwise fallback to Map (Local mode)
-    let sent = false;
-    if (explicitChatId && bot) {
-        bot.sendMessage(explicitChatId, message).catch(err => console.error(`[TELEGRAM] Stateless Send failed: ${err.message}`));
-        sent = true;
-    } else {
-        sent = notifyUser(userId, msgType, message);
-    }
-
-    if (sent) {
-        res.send(encryptResponse({ success: true }));
-    } else {
-        res.status(200).send(encryptResponse({ success: false, reason: "Not linked or disabled" }));
-    }
-});
-
-// Real 1x1 PNG for Favicon
-const faviconBuffer = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
-app.get('/favicon.png', (req, res) => {
-    res.type('png').send(faviconBuffer);
-});
-app.get('/favicon.ico', (req, res) => res.status(204).end());
-
 app.get('/admin/config', (req, res) => {
     res.json({
         server_status: "online",
         auto_license_mode: AUTO_LICENSE_MODE,
-        telegramLinks: telegramUsers.size,
-        bot_status: botStatus,
-        bot_username: botUsername
+        memory_packs_count: packs.length
     });
 });
 
-// Public Status Endpoint
-app.get('/telegram/status', (req, res) => {
-    res.json({
-        status: botStatus,
-        username: botUsername,
-        token_configured: !!TELEGRAM_TOKEN
-    });
+app.post('/admin/reset', (req, res) => {
+    packs = [];
+    console.log('[ADMIN] Packs reset requested.');
+    res.json({ success: true, message: "All packs cleared." });
 });
 
-app.get('/', (req, res) => res.send('Hostile Server V9 (Bot Verify) Active.'));
+app.get('/', (req, res) => res.send('Hostile Server V4 (TFG Auto-License) Active.'));
 
-// Catch-All 404
+// ==========================================
+//  ERROR HANDLING & 404
+// ==========================================
+
+// Catch-All 404 Handler
 app.use((req, res) => {
     console.log(`[404] Missing Endpoint: ${req.method} ${req.originalUrl}`);
     res.status(404).json({ error: "Endpoint not found" });
 });
 
+// Global Error Handler
+app.use((err, req, res, next) => {
+    console.error(`[ERROR] Unhandled Exception: ${err.message}`);
+    console.error(err.stack);
+    res.status(500).json({ error: "Internal Server Error" });
+});
+
 if (require.main === module) {
     app.listen(PORT, () => {
         console.log(`[SERVER] Running on port ${PORT}`);
+        console.log(`[SERVER] AUTO_LICENSE_MODE: ${AUTO_LICENSE_MODE}`);
     });
 }
 
