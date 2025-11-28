@@ -376,46 +376,30 @@ app.delete('/pack/:id', (req, res) => {
 // ==========================================
 //  STATELESS TOKEN HELPERS
 // ==========================================
-// ==========================================
-//  STATELESS TOKEN HELPERS (COMPACT)
-// ==========================================
-// Derive a fixed 256-bit key from the token for AES
-const TOKEN_KEY = CryptoJS.SHA256(TELEGRAM_TOKEN);
-
 const generateStatelessToken = (userId) => {
-    // Format: "userId|expiry"
-    const expiry = Date.now() + 300000; // 5 minutes
-    const rawData = `${userId}|${expiry}`;
-
-    // Encrypt using AES ECB (no IV needed for randomness here, we rely on expiry for uniqueness/salt effect)
-    // We use the raw key to avoid "Salted__" header overhead
-    const encrypted = CryptoJS.AES.encrypt(rawData, TOKEN_KEY, {
-        mode: CryptoJS.mode.ECB,
-        padding: CryptoJS.pad.Pkcs7
+    const payload = JSON.stringify({
+        u: userId,
+        e: Date.now() + 300000 // 5 minutes
     });
-
-    // Return Base64 string (standard format)
-    return encrypted.toString();
+    const encodedPayload = Buffer.from(payload).toString('base64');
+    const signature = CryptoJS.HmacSHA256(encodedPayload, TELEGRAM_TOKEN).toString(CryptoJS.enc.Base64);
+    return `${encodedPayload}.${signature}`;
 };
 
 const verifyStatelessToken = (tokenString) => {
     try {
-        // Decrypt
-        const decrypted = CryptoJS.AES.decrypt(tokenString, TOKEN_KEY, {
-            mode: CryptoJS.mode.ECB,
-            padding: CryptoJS.pad.Pkcs7
-        });
+        const parts = tokenString.split('.');
+        if (parts.length !== 2) return null;
 
-        const rawData = decrypted.toString(CryptoJS.enc.Utf8);
-        if (!rawData) return null;
+        const [encodedPayload, signature] = parts;
+        const expectedSignature = CryptoJS.HmacSHA256(encodedPayload, TELEGRAM_TOKEN).toString(CryptoJS.enc.Base64);
 
-        const [userId, expiryStr] = rawData.split('|');
-        if (!userId || !expiryStr) return null;
+        if (signature !== expectedSignature) return null;
 
-        const expiry = parseInt(expiryStr);
-        if (Date.now() > expiry) return null;
+        const payload = JSON.parse(Buffer.from(encodedPayload, 'base64').toString('utf8'));
+        if (Date.now() > payload.e) return null;
 
-        return userId;
+        return payload.u;
     } catch (e) {
         console.error("Token verification failed:", e.message);
         return null;
