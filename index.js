@@ -22,7 +22,7 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || "8478009189:AAHCYK4Dmefy2I8
 const VERCEL_URL = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null;
 
 // Middleware
-app.set('etag', false); // Disable ETags to prevent 304 responses
+app.set('etag', false);
 app.use(cors({ origin: "*" }));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -61,6 +61,9 @@ if (TELEGRAM_TOKEN && TELEGRAM_TOKEN !== "YOUR_TELEGRAM_BOT_TOKEN") {
             const chatId = msg.chat.id;
             const token = match[1];
 
+            // Note: In Vercel, this Map is empty on new instances.
+            // Linking will only work if the webhook hits the SAME instance 
+            // that generated the token (unlikely).
             if (telegramTokens.has(token)) {
                 const userId = telegramTokens.get(token);
                 telegramUsers.set(userId, chatId);
@@ -71,6 +74,7 @@ if (TELEGRAM_TOKEN && TELEGRAM_TOKEN !== "YOUR_TELEGRAM_BOT_TOKEN") {
                 console.log(`[TELEGRAM] Linked chat ${chatId} to user ${userId}`);
             } else {
                 bot.sendMessage(chatId, "❌ Invalid or expired token. Please generate a new one from the game.");
+                console.log(`[TELEGRAM] Failed link attempt. Token: ${token}, Chat: ${chatId}. Map Size: ${telegramTokens.size}`);
             }
         });
 
@@ -113,7 +117,6 @@ const verifyXToken = (req, res, next) => {
         return next();
     }
 
-    // Public routes
     if (req.path === '/telegram/webhook' || req.path === '/favicon.ico' || req.path === '/favicon.png') {
         return next();
     }
@@ -267,11 +270,13 @@ app.delete('/pack/:id', (req, res) => {
 
 // Generate Token
 app.post('/telegram/token', (req, res) => {
+    console.log("[TELEGRAM] POST /telegram/token called");
     const userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
     const finalId = userId || (AUTO_LICENSE_MODE ? "TFG_GUEST" : null);
 
     if (!finalId) {
-        return res.status(401).json({ error: "Unauthorized: No User ID found" });
+        console.log("[TELEGRAM] Token gen failed: No ID");
+        return res.status(401).send(encryptResponse({ error: "Unauthorized" }));
     }
 
     const token = Math.random().toString(36).substr(2, 8).toUpperCase();
@@ -279,7 +284,9 @@ app.post('/telegram/token', (req, res) => {
     setTimeout(() => telegramTokens.delete(token), 600000);
 
     console.log(`[TELEGRAM] Generated token ${token} for user ${finalId}`);
-    res.json({ token });
+
+    // ENCRYPT RESPONSE
+    res.send(encryptResponse({ token }));
 });
 
 // Get Token (Check if linked)
@@ -287,11 +294,12 @@ app.get('/telegram/token', (req, res) => {
     const userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
     const finalId = userId || (AUTO_LICENSE_MODE ? "TFG_GUEST" : null);
 
-    if (!finalId) return res.status(401).json({ error: "Unauthorized" });
+    if (!finalId) return res.status(401).send(encryptResponse({ error: "Unauthorized" }));
 
     const chatId = telegramUsers.get(finalId);
-    // Explicitly set 200 to override any 304 behavior if ETag disabling fails
-    res.status(200).json({ linked: !!chatId, chatId });
+
+    // ENCRYPT RESPONSE
+    res.status(200).send(encryptResponse({ linked: !!chatId, chatId }));
 });
 
 // Delete Token (Unlink)
@@ -299,14 +307,14 @@ app.delete('/telegram/token', (req, res) => {
     const userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
     const finalId = userId || (AUTO_LICENSE_MODE ? "TFG_GUEST" : null);
 
-    if (!finalId) return res.status(401).json({ error: "Unauthorized" });
+    if (!finalId) return res.status(401).send(encryptResponse({ error: "Unauthorized" }));
 
     if (telegramUsers.has(finalId)) {
         const chatId = telegramUsers.get(finalId);
         telegramUsers.delete(finalId);
         telegramChats.delete(chatId);
     }
-    res.json({ success: true });
+    res.send(encryptResponse({ success: true }));
 });
 
 // Webhook
@@ -321,14 +329,14 @@ app.post('/telegram/notify', (req, res) => {
     const userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
     const { message } = req.body;
 
-    if (!userId || userId === 'unknown') return res.status(401).json({ error: "Unauthorized" });
+    if (!userId || userId === 'unknown') return res.status(401).send(encryptResponse({ error: "Unauthorized" }));
 
     const chatId = telegramUsers.get(userId);
     if (chatId && bot) {
         bot.sendMessage(chatId, message);
-        res.json({ success: true });
+        res.send(encryptResponse({ success: true }));
     } else {
-        res.status(404).json({ error: "User not linked or bot inactive" });
+        res.status(404).send(encryptResponse({ error: "User not linked" }));
     }
 });
 
@@ -336,7 +344,6 @@ app.post('/telegram/notify', (req, res) => {
 //  ASSETS & ADMIN
 // ==========================================
 
-// Favicon Redirect to Telegram Logo
 app.get('/favicon.png', (req, res) => {
     res.redirect('https://telegram.org/img/t_logo.png');
 });
@@ -350,7 +357,7 @@ app.get('/admin/config', (req, res) => {
     });
 });
 
-app.get('/', (req, res) => res.send('Hostile Server V7 (No-Cache) Active.'));
+app.get('/', (req, res) => res.send('Hostile Server V8 (Encrypted Telegram) Active.'));
 
 // Catch-All 404
 app.use((req, res) => {
