@@ -208,7 +208,30 @@ app.get('/admin/config', (req, res) => {
     });
 });
 
+app.post('/admin/reset', (req, res) => {
+    packs = [];
+    console.log('[ADMIN] Packs reset requested.');
+    res.json({ success: true, message: "All packs cleared." });
+});
+
 app.get('/', (req, res) => res.send('Hostile Server V4 (TFG Auto-License) Active.'));
+
+// ==========================================
+//  ERROR HANDLING & 404
+// ==========================================
+
+// Catch-All 404 Handler
+app.use((req, res) => {
+    console.log(`[404] Missing Endpoint: ${req.method} ${req.originalUrl}`);
+    res.status(404).json({ error: "Endpoint not found" });
+});
+
+// Global Error Handler
+app.use((err, req, res, next) => {
+    console.error(`[ERROR] Unhandled Exception: ${err.message}`);
+    console.error(err.stack);
+    res.status(500).json({ error: "Internal Server Error" });
+});
 
 if (require.main === module) {
     app.listen(PORT, () => {
