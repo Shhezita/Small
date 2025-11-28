@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const CryptoJS = require("crypto-js");
+const Redis = require('ioredis'); // Standard Redis Client
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -10,6 +11,24 @@ const PORT = process.env.PORT || 3000;
 // ==========================================
 const AUTO_LICENSE_MODE = true; // ¡ACTIVADO POR DEFECTO PARA TFG!
 const ENCRYPTION_KEY = ""; // Clave vacía detectada en el cliente (para desencriptar REQUEST)
+
+// Detectar si usar Redis (Flag explícito)
+const USE_DB = process.env.USE_DB === 'true';
+
+// Inicializar Redis si es necesario
+let redis = null;
+if (USE_DB) {
+    const redisUrl = process.env.REDIS_URL;
+    if (redisUrl) {
+        redis = new Redis(redisUrl);
+        redis.on('error', (err) => console.error('[REDIS] Error:', err));
+        redis.on('connect', () => console.log('[REDIS] Conectado'));
+    } else {
+        console.error('[REDIS] USE_DB es true pero falta REDIS_URL');
+    }
+} else {
+    console.log('[REDIS] Modo Memoria (USE_DB no es true)');
+}
 
 // CONSTANTES
 // 120 chars Base64 string WITHOUT padding (multiple of 3 bytes = 4 chars, so 90 bytes -> 120 chars)
@@ -21,8 +40,70 @@ app.use(cors({ origin: "*" }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Base de datos volátil
-let packs = [];
+// ==========================================
+//  BASE DE DATOS (Memoria vs Redis)
+// ==========================================
+let memoryPacks = [];
+let memoryConfigs = {};
+
+// Helper para obtener packs
+const getPacks = async () => {
+    if (redis) {
+        try {
+            const data = await redis.get('packs');
+            return data ? JSON.parse(data) : [];
+        } catch (e) {
+            console.error("Redis Error (getPacks):", e);
+            return [];
+        }
+    }
+    return memoryPacks;
+};
+
+// Helper para guardar packs
+const savePacks = async (newPacks) => {
+    if (redis) {
+        try {
+            await redis.set('packs', JSON.stringify(newPacks));
+        } catch (e) {
+            console.error("Redis Error (savePacks):", e);
+        }
+    } else {
+        memoryPacks = newPacks;
+    }
+};
+
+// Helper para guardar Configuración
+const savePlayerConfig = async (playerId, config) => {
+    if (redis) {
+        try {
+            // Guardamos como string JSON en un hash
+            await redis.hset('player_configs', playerId, JSON.stringify(config));
+            console.log(`[DB] Config guardada en Redis para ${playerId}`);
+        } catch (e) {
+            console.error("Redis Error (savePlayerConfig):", e);
+        }
+    } else {
+        memoryConfigs[playerId] = config;
+        console.log(`[MEM] Config guardada en RAM para ${playerId}`);
+    }
+};
+
+// Helper para cargar Configuración
+const getPlayerConfig = async (playerId) => {
+    if (redis) {
+        try {
+            const data = await redis.hget('player_configs', playerId);
+            return data ? JSON.parse(data) : null;
+        } catch (e) {
+            console.error("Redis Error (getPlayerConfig):", e);
+            return null;
+        }
+    } else {
+        return memoryConfigs[playerId] || null;
+    }
+};
+
 
 // ==========================================
 //  UTILIDADES
@@ -137,17 +218,20 @@ const handleFreeLicense = (req, res) => {
     res.send(encryptResponse(responseData));
 };
 
-// Rutas
-// Agregamos ruta para cuando NO hay key (check/) y version check
+// Rutas Licencia
 app.all(['/check-licence/check/:key', '/check-licence/v2/check/:key', '/api/v2/check-license', '/check-licence/v2/check/'], handleCheckLicense);
 app.all(['/check-licence/free', '/check-licence/v2/free', '/api/v2/free'], handleFreeLicense);
 app.all(['/check-licence/v2/check-version/:version'], handleCheckVersion);
 
 // ==========================================
-//  SISTEMA DE PAQUETES
+//  SISTEMA DE PAQUETES (PACKS)
 // ==========================================
-app.post('/pack/request', (req, res) => {
-    if (packs.length > 500) packs = packs.slice(-200);
+app.post('/pack/request', async (req, res) => {
+    let currentPacks = await getPacks();
+
+    // Limpieza automática si crece mucho
+    if (currentPacks.length > 500) currentPacks = currentPacks.slice(-200);
+
     const clientId = req.user.userId !== 'unknown' ? req.user.userId : req.body.clientId;
     if (!clientId) return res.status(400).json({ error: "Missing clientId" });
 
@@ -161,60 +245,106 @@ app.post('/pack/request', (req, res) => {
         createdAt: Date.now(),
         metaData: { basis: "14-1", quality: 0, level: 1, soulboundTo: null }
     };
-    packs.push(newPack);
+
+    currentPacks.push(newPack);
+    await savePacks(currentPacks);
+
     console.log(`[PACK] Nuevo pack creado: ${newPack._id} para ${clientId}`);
-    res.json(newPack); // Los packs parece que NO van encriptados en la respuesta, según análisis previo
+    res.json(newPack);
 });
 
-const handleGetPending = (req, res) => {
+const handleGetPending = async (req, res) => {
     const playerId = req.params.playerId || req.user.userId || req.query.playerId;
     if (!playerId) return res.status(400).json({ error: "ID missing" });
-    res.json(packs.filter(p => p.bankId === playerId.toString() && p.state === 'pending'));
+
+    const currentPacks = await getPacks();
+    // Pending: Packs donde bankId == playerId (alguien me envía a mí)
+    const pending = currentPacks.filter(p => p.bankId === playerId.toString() && p.state === 'pending');
+    res.json(pending);
 };
 
-const handleGetReady = (req, res) => {
+const handleGetReady = async (req, res) => {
     const playerId = req.params.playerId || req.user.userId || req.query.playerId;
     if (!playerId) return res.status(400).json({ error: "ID missing" });
-    res.json(packs.filter(p => p.clientId === playerId.toString() && p.state === 'ready'));
+
+    const currentPacks = await getPacks();
+    // Ready: Packs donde clientId == playerId (yo envié y ya están listos/cobrados)
+    const ready = currentPacks.filter(p => p.clientId === playerId.toString() && p.state === 'ready');
+    res.json(ready);
 };
 
 app.get(['/pack/pending/:playerId', '/pack/pending'], handleGetPending);
 app.get(['/pack/ready/:playerId', '/pack/ready'], handleGetReady);
 
-app.patch('/pack/state', (req, res) => {
+app.patch('/pack/state', async (req, res) => {
     const { packId, state } = req.body;
-    const packIndex = packs.findIndex(p => p._id === packId);
+    let currentPacks = await getPacks();
+
+    const packIndex = currentPacks.findIndex(p => p._id === packId);
     if (packIndex !== -1) {
-        packs[packIndex].state = state;
+        currentPacks[packIndex].state = state;
+        await savePacks(currentPacks);
         res.json({ success: true });
     } else {
         res.status(404).json({ error: "Pack not found" });
     }
 });
 
-app.delete('/pack/:id', (req, res) => {
-    packs = packs.filter(p => p._id !== req.params.id);
+app.delete('/pack/:id', async (req, res) => {
+    let currentPacks = await getPacks();
+    const newPacks = currentPacks.filter(p => p._id !== req.params.id);
+    await savePacks(newPacks);
     res.json({ success: true });
+});
+
+// ==========================================
+//  SISTEMA DE CONFIGURACIONES (NUEVO)
+// ==========================================
+app.post('/config/save', async (req, res) => {
+    const { playerId, payload } = req.body;
+
+    if (!playerId || !payload) {
+        return res.status(400).json({ error: "Missing playerId or payload" });
+    }
+
+    await savePlayerConfig(playerId, payload);
+    res.json({ success: true, message: "Config saved" });
+});
+
+app.get('/config/load/:playerId', async (req, res) => {
+    const { playerId } = req.params;
+    if (!playerId) return res.status(400).json({ error: "Missing playerId" });
+
+    const config = await getPlayerConfig(playerId);
+
+    if (config) {
+        res.json({ success: true, payload: config });
+    } else {
+        res.status(404).json({ error: "Config not found" });
+    }
 });
 
 // ==========================================
 //  ADMIN
 // ==========================================
-app.get('/admin/config', (req, res) => {
+app.get('/admin/config', async (req, res) => {
+    const currentPacks = await getPacks();
     res.json({
         server_status: "online",
         auto_license_mode: AUTO_LICENSE_MODE,
-        memory_packs_count: packs.length
+        db_mode: redis ? "Redis" : "Memory",
+        packs_count: currentPacks.length
     });
 });
 
-app.post('/admin/reset', (req, res) => {
-    packs = [];
-    console.log('[ADMIN] Packs reset requested.');
-    res.json({ success: true, message: "All packs cleared." });
+app.post('/admin/reset', async (req, res) => {
+    await savePacks([]);
+    if (redis) await redis.del('player_configs'); // Opcional: limpiar configs también
+    console.log('[ADMIN] Reset requested.');
+    res.json({ success: true, message: "All data cleared." });
 });
 
-app.get('/', (req, res) => res.send('Hostile Server V4 (TFG Auto-License) Active.'));
+app.get('/', (req, res) => res.send('Hostile Server V6 (TFG + Redis Standard) Active.'));
 
 // ==========================================
 //  ERROR HANDLING & 404
@@ -237,6 +367,7 @@ if (require.main === module) {
     app.listen(PORT, () => {
         console.log(`[SERVER] Running on port ${PORT}`);
         console.log(`[SERVER] AUTO_LICENSE_MODE: ${AUTO_LICENSE_MODE}`);
+        console.log(`[SERVER] DB MODE: ${USE_DB ? "Redis" : "Memory"}`);
     });
 }
 
