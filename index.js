@@ -43,6 +43,7 @@ let telegramTokens = new Map(); // token -> userId
 let userTokens = new Map(); // userId -> { token, expiresAt }
 let telegramUsers = new Map(); // userId -> chatId
 let telegramChats = new Map(); // chatId -> userId
+let userPreferences = new Map(); // userId -> { pm: bool, gm: bool, bt: bool, ge: bool }
 let botStatus = "Initializing...";
 let botUsername = "Unknown";
 
@@ -50,6 +51,24 @@ let botUsername = "Unknown";
 //  TELEGRAM BOT SETUP
 // ==========================================
 let bot;
+
+// Helper to notify user based on preferences
+const notifyUser = (userId, type, message) => {
+    const chatId = telegramUsers.get(userId);
+    if (!chatId || !bot) return false;
+
+    const prefs = userPreferences.get(userId) || { pm: true, gm: true, bt: true, ge: true };
+
+    // Check preferences
+    if (type === 'PM' && !prefs.pm) return false;
+    if (type === 'GM' && !prefs.gm) return false;
+    if (type === 'BT' && !prefs.bt) return false;
+    if (type === 'GE' && !prefs.ge) return false;
+
+    bot.sendMessage(chatId, message).catch(err => console.error(`[TELEGRAM] Send failed: ${err.message}`));
+    return true;
+};
+
 if (TELEGRAM_TOKEN) {
     try {
         if (VERCEL_URL) {
@@ -81,6 +100,11 @@ if (TELEGRAM_TOKEN) {
                 telegramChats.set(chatId, userId);
                 telegramTokens.delete(token);
 
+                // Set default prefs if not set
+                if (!userPreferences.has(userId)) {
+                    userPreferences.set(userId, { pm: true, gm: true, bt: true, ge: true });
+                }
+
                 bot.sendMessage(chatId, "✅ Account successfully linked! You will now receive notifications here.");
                 console.log(`[TELEGRAM] Linked chat ${chatId} to user ${userId}`);
             } else {
@@ -93,7 +117,8 @@ if (TELEGRAM_TOKEN) {
                 const chatId = msg.chat.id;
                 const userId = telegramChats.get(chatId);
                 if (userId) {
-                    bot.sendMessage(chatId, `Received: ${msg.text} (This is a reply placeholder)`);
+                    // Echo or handle command
+                    console.log(`[TELEGRAM] Msg from ${userId}: ${msg.text}`);
                 }
             }
         });
@@ -275,11 +300,9 @@ app.delete('/pack/:id', (req, res) => {
 //  RUTAS DE TELEGRAM
 // ==========================================
 
-// Generate Token
+// Generate Token & Update Settings
 app.post('/telegram/token', (req, res) => {
     console.log("[TELEGRAM] POST /telegram/token called");
-    console.log("[TELEGRAM] Headers:", JSON.stringify(req.headers));
-    console.log("[TELEGRAM] Body:", JSON.stringify(req.body));
 
     const userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
     const finalId = userId || (AUTO_LICENSE_MODE ? "TFG_GUEST" : null);
@@ -289,12 +312,32 @@ app.post('/telegram/token', (req, res) => {
         return res.status(401).send(encryptResponse({ error: "Unauthorized" }));
     }
 
+    // Update Preferences if provided
+    const { pm, gm, bt, ge } = req.body;
+    if (pm !== undefined || gm !== undefined || bt !== undefined || ge !== undefined) {
+        const currentPrefs = userPreferences.get(finalId) || { pm: true, gm: true, bt: true, ge: true };
+        userPreferences.set(finalId, {
+            pm: pm !== undefined ? pm : currentPrefs.pm,
+            gm: gm !== undefined ? gm : currentPrefs.gm,
+            bt: bt !== undefined ? bt : currentPrefs.bt,
+            ge: ge !== undefined ? ge : currentPrefs.ge
+        });
+        console.log(`[TELEGRAM] Updated prefs for ${finalId}:`, userPreferences.get(finalId));
+    }
+
+    const prefs = userPreferences.get(finalId) || { pm: true, gm: true, bt: true, ge: true };
+
     // Check if valid token exists
     if (userTokens.has(finalId)) {
         const existing = userTokens.get(finalId);
         if (existing.expiresAt > Date.now()) {
             console.log(`[TELEGRAM] Returning existing token ${existing.token} for user ${finalId}`);
-            return res.send(encryptResponse({ token: existing.token, expires: existing.expiresAt }));
+            return res.send(encryptResponse({
+                token: existing.token,
+                expires: existing.expiresAt,
+                settings: prefs,
+                botName: botUsername
+            }));
         }
     }
 
@@ -312,7 +355,12 @@ app.post('/telegram/token', (req, res) => {
     }, 300000);
 
     console.log(`[TELEGRAM] Generated token ${token} for user ${finalId}`);
-    res.send(encryptResponse({ token, expires: expiresAt }));
+    res.send(encryptResponse({
+        token,
+        expires: expiresAt,
+        settings: prefs,
+        botName: botUsername
+    }));
 });
 
 // Get Token (Check if linked or get pending token)
@@ -323,7 +371,14 @@ app.get('/telegram/token', (req, res) => {
     if (!finalId) return res.status(401).send(encryptResponse({ error: "Unauthorized" }));
 
     const chatId = telegramUsers.get(finalId);
-    let response = { linked: !!chatId, chatId };
+    const prefs = userPreferences.get(finalId) || { pm: true, gm: true, bt: true, ge: true };
+
+    let response = {
+        linked: !!chatId,
+        chatId,
+        settings: prefs,
+        botName: botUsername
+    };
 
     // If not linked, check for pending token
     if (!chatId && userTokens.has(finalId)) {
@@ -368,16 +423,18 @@ app.get('/telegram/webhook', (req, res) => res.send("Telegram Webhook Active"));
 // Notify
 app.post('/telegram/notify', (req, res) => {
     const userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
-    const { message } = req.body;
+    const { message, type } = req.body; // Expect 'type' (PM, GM, BT, GE)
 
     if (!userId || userId === 'unknown') return res.status(401).send(encryptResponse({ error: "Unauthorized" }));
 
-    const chatId = telegramUsers.get(userId);
-    if (chatId && bot) {
-        bot.sendMessage(chatId, message);
+    // Use default type 'PM' if not specified
+    const msgType = type || 'PM';
+    const sent = notifyUser(userId, msgType, message);
+
+    if (sent) {
         res.send(encryptResponse({ success: true }));
     } else {
-        res.status(404).send(encryptResponse({ error: "User not linked" }));
+        res.status(200).send(encryptResponse({ success: false, reason: "Not linked or disabled" }));
     }
 });
 
