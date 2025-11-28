@@ -8,13 +8,12 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ==========================================
-//  CONFIGURACIÓN TFG (FROM WORKING LICENSE)
+//  CONFIGURACIÓN TFG
 // ==========================================
-const AUTO_LICENSE_MODE = true; // ¡ACTIVADO POR DEFECTO PARA TFG!
-const ENCRYPTION_KEY = ""; // Clave vacía detectada en el cliente (para desencriptar REQUEST)
+const AUTO_LICENSE_MODE = true;
+const ENCRYPTION_KEY = "";
 
 // CONSTANTES
-// 120 chars Base64 string WITHOUT padding
 const SAFE_LICENSE = "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkwYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkwYWJjZGVmZ2hpamtsbW5vcHFy";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin123";
 
@@ -27,11 +26,17 @@ app.use(cors({ origin: "*" }));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
+// Disable caching for API routes
+app.use((req, res, next) => {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    next();
+});
+
 // Base de datos volátil
 let packs = [];
-let telegramTokens = new Map(); // token -> userId
-let telegramUsers = new Map(); // userId -> chatId
-let telegramChats = new Map(); // chatId -> userId
+let telegramTokens = new Map();
+let telegramUsers = new Map();
+let telegramChats = new Map();
 
 // ==========================================
 //  TELEGRAM BOT SETUP
@@ -84,10 +89,9 @@ if (TELEGRAM_TOKEN && TELEGRAM_TOKEN !== "YOUR_TELEGRAM_BOT_TOKEN") {
 }
 
 // ==========================================
-//  UTILIDADES (FROM WORKING LICENSE)
+//  UTILIDADES
 // ==========================================
 const encryptResponse = (data) => {
-    // CRITICAL FIX: El cliente desencripta la RESPUESTA usando la clave "sugi"
     const jsonString = JSON.stringify(data);
     const encrypted = CryptoJS.AES.encrypt(jsonString, "sugi").toString();
     return encrypted;
@@ -105,8 +109,8 @@ const verifyXToken = (req, res, next) => {
         return next();
     }
 
-    // Public Telegram Webhook & Favicon
-    if (req.path === '/telegram/webhook' || req.path === '/favicon.ico') {
+    // Public routes
+    if (req.path === '/telegram/webhook' || req.path === '/favicon.ico' || req.path === '/favicon.png') {
         return next();
     }
 
@@ -131,20 +135,15 @@ const verifyXToken = (req, res, next) => {
 app.use(verifyXToken);
 
 // ==========================================
-//  SISTEMA DE LICENCIAS (FROM WORKING LICENSE)
+//  SISTEMA DE LICENCIAS
 // ==========================================
 const checkUserLicense = (userId) => {
-    console.log(`[TFG DEBUG] Verificando licencia para Player ID: ${userId}`);
-
     if (AUTO_LICENSE_MODE) {
-        console.log(`[TFG DEBUG] AUTO_LICENSE_MODE activo. Acceso CONCEDIDO.`);
         return { valid: true, days: 999, type: 'TFG_AUTO' };
     }
 
     const allowedIdsString = process.env.ALLOWED_IDS || process.env.ALLOWED_PLAYERS || "";
     const allowedIds = allowedIdsString.replace(/['"]/g, '').split(',').map(id => id.trim());
-
-    // Hardcoded fallback
     allowedIds.push("10765579");
 
     if (allowedIds.includes(userId.toString())) {
@@ -170,17 +169,14 @@ const handleCheckLicense = (req, res) => {
             valid: status.valid,
             until: "2099-12-31",
             type: status.type,
-            q: "activated" // CRITICAL FIX: UI requires this property
+            q: "activated"
         }
     };
 
-    // IMPORTANTE: Enviamos texto plano (que es el ciphertext)
-    const encryptedResponse = encryptResponse(responseData);
-    res.send(encryptedResponse);
+    res.send(encryptResponse(responseData));
 };
 
 const handleCheckVersion = (req, res) => {
-    console.log(`[VERSION] Check version requested: ${req.params.version || "unknown"}`);
     const responseData = {
         valid: true,
         url: "https://small-mu.vercel.app/download",
@@ -190,7 +186,6 @@ const handleCheckVersion = (req, res) => {
 };
 
 const handleFreeLicense = (req, res) => {
-    console.log(`[TRIAL] Trial solicitado`);
     const responseData = {
         licence: SAFE_LICENSE,
         days: 1,
@@ -204,7 +199,9 @@ const handleFreeLicense = (req, res) => {
 };
 
 // Rutas de Licencia
-app.all(['/check-licence/check/:key', '/check-licence/v2/check/:key', '/api/v2/check-license', '/check-licence/v2/check/'], handleCheckLicense);
+// Explicitly handle empty key route separately to ensure it matches
+app.all('/check-licence/v2/check/', handleCheckLicense);
+app.all(['/check-licence/check/:key', '/check-licence/v2/check/:key', '/api/v2/check-license'], handleCheckLicense);
 app.all(['/check-licence/free', '/check-licence/v2/free', '/api/v2/free'], handleFreeLicense);
 app.all(['/check-licence/v2/check-version/*', '/check-version'], handleCheckVersion);
 
@@ -227,7 +224,6 @@ app.post('/pack/request', (req, res) => {
         metaData: { basis: "14-1", quality: 0, level: 1, soulboundTo: null }
     };
     packs.push(newPack);
-    console.log(`[PACK] Nuevo pack creado: ${newPack._id} para ${clientId}`);
     res.json(newPack);
 });
 
@@ -268,20 +264,15 @@ app.delete('/pack/:id', (req, res) => {
 
 // Generate Token
 app.post('/telegram/token', (req, res) => {
-    // Fallback: Use userId from token OR from body (if token fails/missing)
     const userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
-
-    // In AUTO_LICENSE_MODE, allow guest tokens if no ID
     const finalId = userId || (AUTO_LICENSE_MODE ? "TFG_GUEST" : null);
 
     if (!finalId) {
-        console.log("[TELEGRAM] Token generation failed: No User ID found");
         return res.status(401).json({ error: "Unauthorized: No User ID found" });
     }
 
     const token = Math.random().toString(36).substr(2, 8).toUpperCase();
     telegramTokens.set(token, finalId);
-
     setTimeout(() => telegramTokens.delete(token), 600000);
 
     console.log(`[TELEGRAM] Generated token ${token} for user ${finalId}`);
@@ -296,7 +287,6 @@ app.get('/telegram/token', (req, res) => {
     if (!finalId) return res.status(401).json({ error: "Unauthorized" });
 
     const chatId = telegramUsers.get(finalId);
-    // Return 200 OK with status, not 304
     res.status(200).json({ linked: !!chatId, chatId });
 });
 
@@ -311,23 +301,18 @@ app.delete('/telegram/token', (req, res) => {
         const chatId = telegramUsers.get(finalId);
         telegramUsers.delete(finalId);
         telegramChats.delete(chatId);
-        console.log(`[TELEGRAM] Unlinked user ${finalId}`);
     }
     res.json({ success: true });
 });
 
-// Webhook Endpoint (POST is standard, GET added for browser check)
+// Webhook
 app.post('/telegram/webhook', (req, res) => {
-    if (bot) {
-        bot.processUpdate(req.body);
-    }
+    if (bot) bot.processUpdate(req.body);
     res.sendStatus(200);
 });
-app.get('/telegram/webhook', (req, res) => {
-    res.send("Telegram Webhook Active");
-});
+app.get('/telegram/webhook', (req, res) => res.send("Telegram Webhook Active"));
 
-// Notify Endpoint
+// Notify
 app.post('/telegram/notify', (req, res) => {
     const userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
     const { message } = req.body;
@@ -344,19 +329,24 @@ app.post('/telegram/notify', (req, res) => {
 });
 
 // ==========================================
-//  ADMIN & ROOT
+//  ASSETS & ADMIN
 // ==========================================
+
+// Favicon Redirect to Telegram Logo
+app.get('/favicon.png', (req, res) => {
+    res.redirect('https://telegram.org/img/t_logo.png');
+});
+app.get('/favicon.ico', (req, res) => res.status(204).end());
+
 app.get('/admin/config', (req, res) => {
     res.json({
         server_status: "online",
         auto_license_mode: AUTO_LICENSE_MODE,
-        memory_packs_count: packs.length,
         telegramLinks: telegramUsers.size
     });
 });
 
-app.get('/favicon.ico', (req, res) => res.status(204).end());
-app.get('/', (req, res) => res.send('Hostile Server V5 (Merged & Fixed) Active.'));
+app.get('/', (req, res) => res.send('Hostile Server V6 (Polished) Active.'));
 
 // Catch-All 404
 app.use((req, res) => {
@@ -367,7 +357,6 @@ app.use((req, res) => {
 if (require.main === module) {
     app.listen(PORT, () => {
         console.log(`[SERVER] Running on port ${PORT}`);
-        console.log(`[SERVER] AUTO_LICENSE_MODE: ${AUTO_LICENSE_MODE}`);
     });
 }
 
