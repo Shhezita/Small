@@ -83,28 +83,43 @@ const generateStatelessToken = (userId, chatId = null) => {
         padding: CryptoJS.pad.Pkcs7
     });
 
-    return encrypted.toString();
+    // Return Hex string (safer for Telegram/URL copy-paste than Base64)
+    return encrypted.ciphertext.toString(CryptoJS.enc.Hex);
 };
 
 const verifyStatelessToken = (tokenString) => {
     try {
-        const decrypted = CryptoJS.AES.decrypt(tokenString, TOKEN_KEY, {
+        // Convert Hex string back to CipherParams or WordArray for decryption
+        const cipherParams = CryptoJS.lib.CipherParams.create({
+            ciphertext: CryptoJS.enc.Hex.parse(tokenString)
+        });
+
+        const decrypted = CryptoJS.AES.decrypt(cipherParams, TOKEN_KEY, {
             mode: CryptoJS.mode.ECB,
             padding: CryptoJS.pad.Pkcs7
         });
 
         const rawData = decrypted.toString(CryptoJS.enc.Utf8);
-        if (!rawData) return null;
+        if (!rawData) {
+            console.error("[TOKEN] Decryption produced empty string. Wrong key or corrupted token.");
+            return null;
+        }
 
         const [userId, expiryStr, chatId] = rawData.split('|');
-        if (!userId || !expiryStr) return null;
+        if (!userId || !expiryStr) {
+            console.error(`[TOKEN] Invalid format: ${rawData}`);
+            return null;
+        }
 
         const expiry = parseInt(expiryStr);
-        if (Date.now() > expiry) return null;
+        if (Date.now() > expiry) {
+            console.error(`[TOKEN] Expired. Now: ${Date.now()}, Exp: ${expiry}`);
+            return null;
+        }
 
         return { userId, chatId: chatId || null };
     } catch (e) {
-        // console.error("Token verification failed:", e.message);
+        console.error("Token verification failed:", e.message);
         return null;
     }
 };
@@ -139,9 +154,10 @@ if (TELEGRAM_TOKEN) {
         // Command: /start (with or without token)
         bot.onText(/\/start(?: (.+))?/, (msg, match) => {
             const chatId = msg.chat.id;
-            const token = match[1];
+            const token = match[1] ? match[1].trim() : null;
 
             if (token) {
+                console.log(`[TELEGRAM] Received /start with token: ${token}`);
                 // Verify the token sent from Game (could be initial temporary token or existing)
                 // For initial linking, we expect a valid userId.
                 // We try to decode it as a stateless token first.
