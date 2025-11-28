@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 3000;
 //  CONFIGURACIÓN TFG
 // ==========================================
 const AUTO_LICENSE_MODE = true;
-const ENCRYPTION_KEY = "";
+const ENCRYPTION_KEY = "sugi";
 
 // CONSTANTES
 const SAFE_LICENSE = "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkwYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkwYWJjZGVmZ2hpamtsbW5vcHFy";
@@ -75,7 +75,7 @@ const notifyUser = (userId, type, message) => {
 // ==========================================
 const generateStatelessToken = (userId) => {
     // Format: "userId|expiry"
-    const expiry = Date.now() + 300000; // 5 minutes
+    const expiry = Date.now() + 86400000; // 24 hours
     const rawData = `${userId}|${expiry}`;
 
     // Encrypt using AES ECB (no IV needed for randomness here, we rely on expiry for uniqueness/salt effect)
@@ -420,10 +420,12 @@ app.delete('/pack/:id', (req, res) => {
 
 // Generate Token & Update Settings
 app.post('/telegram/token', (req, res) => {
-    console.log("[TELEGRAM] POST /telegram/token called");
+    console.log(`[TELEGRAM] POST /telegram/token called. User: ${JSON.stringify(req.user)}, Body: ${JSON.stringify(req.body)}`);
 
     const userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
     const finalId = userId || (AUTO_LICENSE_MODE ? "TFG_GUEST" : null);
+
+    console.log(`[TELEGRAM] Token Gen for ID: ${finalId} (Original: ${userId})`);
 
     if (!finalId) {
         console.log("[TELEGRAM] Token gen failed: No ID");
@@ -447,7 +449,7 @@ app.post('/telegram/token', (req, res) => {
 
     // Generate Stateless Token
     const token = generateStatelessToken(finalId);
-    const expiresAt = Date.now() + 300000;
+    const expiresAt = Date.now() + 86400000; // 24 hours
 
     console.log(`[TELEGRAM] Generated stateless token for user ${finalId}`);
     res.json({
@@ -478,7 +480,7 @@ app.get('/telegram/token', (req, res) => {
     // If not linked, generate a stateless token
     if (!chatId) {
         const token = generateStatelessToken(finalId);
-        const expiresAt = Date.now() + 300000;
+        const expiresAt = Date.now() + 86400000; // 24 hours
 
         response.access_token = token;
         response.expires = expiresAt;
@@ -516,6 +518,7 @@ app.get('/telegram/webhook', (req, res) => res.send("Telegram Webhook Active"));
 
 // Notify
 app.post('/telegram/notify', (req, res) => {
+    console.log(`[TELEGRAM] Notify called. Body: ${JSON.stringify(req.body)}`);
     let userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
     const { message, type } = req.body; // Expect 'type' (PM, GM, BT, GE)
 
@@ -523,12 +526,15 @@ app.post('/telegram/notify', (req, res) => {
     if (userId && (userId.length > 20 || userId.includes('.'))) {
         const verifiedId = verifyStatelessToken(userId);
         if (verifiedId) {
+            console.log(`[TELEGRAM] Token verified. Resolved ID: ${verifiedId}`);
             userId = verifiedId;
         } else {
             console.log("[TELEGRAM] Invalid token in notify:", userId);
             return res.status(401).send(encryptResponse({ error: "Invalid Token" }));
         }
     }
+
+    console.log(`[TELEGRAM] Processing notify for UserID: ${userId}`);
 
     if (!userId || userId === 'unknown') return res.status(401).send(encryptResponse({ error: "Unauthorized" }));
 
