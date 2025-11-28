@@ -383,7 +383,7 @@ app.post('/telegram/token', (req, res) => {
 
     if (!finalId) {
         console.log("[TELEGRAM] Token gen failed: No ID");
-        return res.status(401).send(encryptResponse({ error: "Unauthorized" }));
+        return res.status(401).json({ error: "Unauthorized" });
     }
 
     // Update Preferences if provided
@@ -406,12 +406,12 @@ app.post('/telegram/token', (req, res) => {
         const existing = userTokens.get(finalId);
         if (existing.expiresAt > Date.now()) {
             console.log(`[TELEGRAM] Returning existing token ${existing.token} for user ${finalId}`);
-            return res.send(encryptResponse({
-                token: existing.token,
+            return res.json({
+                access_token: existing.token,
                 expires: existing.expiresAt,
                 settings: prefs,
                 botName: botUsername
-            }));
+            });
         }
     }
 
@@ -429,12 +429,12 @@ app.post('/telegram/token', (req, res) => {
     }, 300000);
 
     console.log(`[TELEGRAM] Generated token ${token} for user ${finalId}`);
-    res.send(encryptResponse({
-        token,
+    res.json({
+        access_token: token,
         expires: expiresAt,
         settings: prefs,
         botName: botUsername
-    }));
+    });
 });
 
 // Get Token (Check if linked or get pending token)
@@ -442,7 +442,7 @@ app.get('/telegram/token', (req, res) => {
     const userId = (req.user && req.user.userId !== 'unknown') ? req.user.userId : (req.body.userId || req.body.playerId);
     const finalId = userId || (AUTO_LICENSE_MODE ? "TFG_GUEST" : null);
 
-    if (!finalId) return res.status(401).send(encryptResponse({ error: "Unauthorized" }));
+    if (!finalId) return res.status(401).json({ error: "Unauthorized" });
 
     const chatId = telegramUsers.get(finalId);
     const prefs = userPreferences.get(finalId) || { pm: true, gm: true, bt: true, ge: true };
@@ -454,16 +454,38 @@ app.get('/telegram/token', (req, res) => {
         botName: botUsername
     };
 
-    // If not linked, check for pending token
-    if (!chatId && userTokens.has(finalId)) {
-        const existing = userTokens.get(finalId);
-        if (existing.expiresAt > Date.now()) {
-            response.token = existing.token;
-            response.expires = existing.expiresAt;
+    // If not linked, check for pending token OR GENERATE ONE
+    if (!chatId) {
+        if (userTokens.has(finalId)) {
+            const existing = userTokens.get(finalId);
+            if (existing.expiresAt > Date.now()) {
+                response.access_token = existing.token;
+                response.expires = existing.expiresAt;
+            }
+        }
+
+        // If still no token, generate one (Client expects it on GET)
+        if (!response.access_token) {
+            const token = Math.random().toString(36).substr(2, 8).toUpperCase();
+            const expiresAt = Date.now() + 300000; // 5 min
+
+            telegramTokens.set(token, finalId);
+            userTokens.set(finalId, { token, expiresAt });
+
+            setTimeout(() => {
+                telegramTokens.delete(token);
+                if (userTokens.get(finalId)?.token === token) {
+                    userTokens.delete(finalId);
+                }
+            }, 300000);
+
+            console.log(`[TELEGRAM] Generated token ${token} for user ${finalId} (via GET)`);
+            response.access_token = token;
+            response.expires = expiresAt;
         }
     }
 
-    res.status(200).send(encryptResponse(response));
+    res.status(200).json(response);
 });
 
 // Delete Token (Unlink)
