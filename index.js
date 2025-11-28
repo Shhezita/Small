@@ -90,25 +90,86 @@ if (TELEGRAM_TOKEN) {
             console.error(`[TELEGRAM] Failed to connect: ${err.message}`);
         });
 
-        bot.onText(/\/start (.+)/, (msg, match) => {
+        // Command: /start (with or without token)
+        bot.onText(/\/start(?: (.+))?/, (msg, match) => {
             const chatId = msg.chat.id;
-            const token = match[1];
+            const token = match[1]; // Capture group 1 is the token if present
 
-            if (telegramTokens.has(token)) {
-                const userId = telegramTokens.get(token);
-                telegramUsers.set(userId, chatId);
-                telegramChats.set(chatId, userId);
-                telegramTokens.delete(token);
+            if (token) {
+                // Linking logic
+                if (telegramTokens.has(token)) {
+                    const userId = telegramTokens.get(token);
+                    telegramUsers.set(userId, chatId);
+                    telegramChats.set(chatId, userId);
+                    telegramTokens.delete(token);
 
-                // Set default prefs if not set
-                if (!userPreferences.has(userId)) {
-                    userPreferences.set(userId, { pm: true, gm: true, bt: true, ge: true });
+                    // Set default prefs if not set
+                    if (!userPreferences.has(userId)) {
+                        userPreferences.set(userId, { pm: true, gm: true, bt: true, ge: true });
+                    }
+
+                    bot.sendMessage(chatId, "✅ Account successfully linked! You will now receive notifications here.\n\nType /help to see available commands.");
+                    console.log(`[TELEGRAM] Linked chat ${chatId} to user ${userId}`);
+                } else {
+                    bot.sendMessage(chatId, "❌ Invalid or expired token. Please generate a new one from the game settings.");
                 }
-
-                bot.sendMessage(chatId, "✅ Account successfully linked! You will now receive notifications here.");
-                console.log(`[TELEGRAM] Linked chat ${chatId} to user ${userId}`);
             } else {
-                bot.sendMessage(chatId, "❌ Invalid or expired token. Please generate a new one from the game.");
+                // Just /start without token
+                if (telegramChats.has(chatId)) {
+                    bot.sendMessage(chatId, "👋 You are already linked! Type /status to check your connection or /help for commands.");
+                } else {
+                    bot.sendMessage(chatId, "👋 Welcome! To link your account, please go to the game settings, click 'Get Access Token', and then click the 'Open Telegram Bot' link.");
+                }
+            }
+        });
+
+        // Command: /help
+        bot.onText(/\/help/, (msg) => {
+            const chatId = msg.chat.id;
+            const helpText = `
+🤖 *Bot Commands:*
+
+/start - Start the bot or link account
+/status - Check connection status
+/unlink - Unlink your account
+/help - Show this help message
+            `;
+            bot.sendMessage(chatId, helpText, { parse_mode: 'Markdown' });
+        });
+
+        // Command: /status
+        bot.onText(/\/status/, (msg) => {
+            const chatId = msg.chat.id;
+            if (telegramChats.has(chatId)) {
+                const userId = telegramChats.get(chatId);
+                const prefs = userPreferences.get(userId);
+                let prefText = "Unknown";
+                if (prefs) {
+                    prefText = `
+- Private Messages: ${prefs.pm ? '✅' : '❌'}
+- Guild Messages: ${prefs.gm ? '✅' : '❌'}
+- Bot Errors: ${prefs.bt ? '✅' : '❌'}
+- Gold Expire: ${prefs.ge ? '✅' : '❌'}
+                    `;
+                }
+                bot.sendMessage(chatId, `✅ *Linked*\nUser ID: \`${userId}\`\n\n*Preferences:*${prefText}`, { parse_mode: 'Markdown' });
+            } else {
+                bot.sendMessage(chatId, "❌ Not linked. Please link your account from the game settings.");
+            }
+        });
+
+        // Command: /unlink
+        bot.onText(/\/unlink/, (msg) => {
+            const chatId = msg.chat.id;
+            if (telegramChats.has(chatId)) {
+                const userId = telegramChats.get(chatId);
+                telegramUsers.delete(userId);
+                telegramChats.delete(chatId);
+                userPreferences.delete(userId); // Optional: clear prefs on unlink
+                bot.sendMessage(chatId, "🔓 Account unlinked. You will no longer receive notifications.");
+                console.log(`[TELEGRAM] Unlinked chat ${chatId} (User ${userId})`);
+            } else {
+                bot.sendMessage(chatId, "You are not linked to any account.");
             }
         });
 
