@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3000;
 //  CONFIGURACIÓN TFG
 // ==========================================
 const AUTO_LICENSE_MODE = true; // ¡ACTIVADO POR DEFECTO PARA TFG!
-const ENCRYPTION_KEY = ""; // Clave vacía detectada en el cliente
+const ENCRYPTION_KEY = ""; // Clave vacía detectada en el cliente (para desencriptar REQUEST)
 
 // CONSTANTES
 // 120 chars Base64 string WITHOUT padding (multiple of 3 bytes = 4 chars, so 90 bytes -> 120 chars)
@@ -29,9 +29,9 @@ let packs = [];
 // ==========================================
 const encryptResponse = (data) => {
     // El cliente espera que la respuesta sea un string encriptado (ciphertext)
-    // Si enviamos JSON plano, el cliente falla al desencriptar.
+    // CRITICAL FIX: El cliente desencripta la RESPUESTA usando la clave "sugi"
     const jsonString = JSON.stringify(data);
-    const encrypted = CryptoJS.AES.encrypt(jsonString, ENCRYPTION_KEY).toString();
+    const encrypted = CryptoJS.AES.encrypt(jsonString, "sugi").toString();
     return encrypted;
 };
 
@@ -48,6 +48,7 @@ const verifyXToken = (req, res, next) => {
     }
 
     try {
+        // El cliente encripta el REQUEST con clave vacía ""
         const bytes = CryptoJS.AES.decrypt(token, ENCRYPTION_KEY);
         const decryptedString = bytes.toString(CryptoJS.enc.Utf8);
         if (!decryptedString) throw new Error("Decryption empty");
@@ -106,7 +107,6 @@ const handleCheckLicense = (req, res) => {
     };
 
     // IMPORTANTE: Enviamos texto plano (que es el ciphertext)
-    // El cliente hará: JSON.parse(AES.decrypt(response, ""))
     const encryptedResponse = encryptResponse(responseData);
     res.send(encryptedResponse);
 };
