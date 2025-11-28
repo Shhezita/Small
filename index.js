@@ -327,8 +327,8 @@ app.get('/config', async (req, res) => {
     const config = await getPlayerConfig(playerId);
 
     if (config) {
-        // Devolvemos estructura consistente
-        res.json({ success: true, payload: config });
+        // Devolvemos la configuración directa, sin envoltorio, ya que el cliente espera iterar sobre las claves
+        res.json(config);
     } else {
         res.status(404).json({ error: "Config not found" });
     }
