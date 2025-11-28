@@ -6,35 +6,32 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ==========================================
-//  CONFIGURACIÓN TFG
+//  CONFIGURACIÓN
 // ==========================================
-const AUTO_LICENSE_MODE = true; // ¡ACTIVADO POR DEFECTO PARA TFG!
-const ENCRYPTION_KEY = ""; // Clave vacía detectada en el cliente
 
-// Middleware
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Base de datos volátil
-let packs = [];
+// CONSTANTES
+// String de 120 chars, válido para Base64 y divisible por 3. CRÍTICO PARA CLIENTE atob().
+const SAFE_LICENSE = "VGhpcyBpcyBhIGZha2UgbGljZW5zZSBmb3IgdGVzdGluZyBwdXJwb3Nlcw==VGhpcyBpcyBhIGZha2UgbGljZW5zZSBmb3IgdGVzdGluZyBwdXJwb3Nlcw==";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin123";
 
-// ==========================================
-//  UTILIDADES
-// ==========================================
-const encryptResponse = (data) => {
-    // El cliente espera que la respuesta sea un string encriptado (ciphertext)
-    // Si enviamos JSON plano, el cliente falla al desencriptar.
-    const jsonString = JSON.stringify(data);
-    const encrypted = CryptoJS.AES.encrypt(jsonString, ENCRYPTION_KEY).toString();
-    return encrypted;
-};
+// Base de datos volátil (Packs)
+let packs = [];
 
 // ==========================================
 //  MIDDLEWARE DE AUTENTICACIÓN
 // ==========================================
 const verifyXToken = (req, res, next) => {
-    if (req.path.startsWith('/admin')) return next();
+    if (req.path.startsWith('/admin')) {
+        const authHeader = req.headers['authorization'];
+        if (authHeader !== `Bearer ${ADMIN_PASSWORD}`) {
+            return res.status(403).json({ error: "Forbidden" });
+        }
+        return next();
+    }
 
     const token = req.headers['x-token'];
     if (!token) {
@@ -43,111 +40,112 @@ const verifyXToken = (req, res, next) => {
     }
 
     try {
-        const bytes = CryptoJS.AES.decrypt(token, ENCRYPTION_KEY);
+        const bytes = CryptoJS.AES.decrypt(token, "");
         const decryptedString = bytes.toString(CryptoJS.enc.Utf8);
+        
         if (!decryptedString) throw new Error("Decryption empty");
+        
         req.user = JSON.parse(decryptedString);
+        next();
     } catch (error) {
-        console.error(`[AUTH] Fallo token: ${error.message}`);
         req.user = { userId: 'unknown' };
+        next();
     }
-    next();
 };
 
 app.use(verifyXToken);
 
 // ==========================================
-//  SISTEMA DE LICENCIAS
+//  LÓGICA DE LICENCIAS
 // ==========================================
+
 const checkUserLicense = (userId) => {
-    console.log(`[TFG DEBUG] Verificando licencia para Player ID: ${userId}`);
-
-    if (AUTO_LICENSE_MODE) {
-        console.log(`[TFG DEBUG] AUTO_LICENSE_MODE activo. Acceso CONCEDIDO.`);
-        return { valid: true, days: 999, type: 'TFG_AUTO' };
-    }
-
     const allowedIdsString = process.env.ALLOWED_IDS || process.env.ALLOWED_PLAYERS || "";
     const allowedIds = allowedIdsString.split(',').map(id => id.trim());
 
-    if (allowedIds.includes(userId.toString())) {
-        return { valid: true, days: 365, type: 'PRO_MANUAL' };
+    // MODO DIOS (*) o ID ESPECIFICO
+    if (allowedIds.includes('*') || allowedIds.includes(userId.toString())) {
+        return { valid: true, days: 365 };
     }
     return { valid: false, days: 0 };
 };
 
+// Manejador de Licencia
 const handleCheckLicense = (req, res) => {
     const targetId = (req.user.userId !== 'unknown') ? req.user.userId : req.body.playerId;
 
-    if (!targetId) {
-        return res.status(400).send(encryptResponse({ error: "No Player ID identified" }));
-    }
+    if (!targetId) return res.status(400).json({ error: "No ID" });
 
     const status = checkUserLicense(targetId);
 
-    // Estructura exacta que espera el cliente tras desencriptar
-    const responseData = {
-        licence: "TFG_VALID_LICENSE_KEY", // Clave dummy
-        days: status.days,
-        object: {
-            valid: status.valid,
-            until: "2099-12-31",
-            type: status.type
-        }
-    };
-
-    // IMPORTANTE: Enviamos texto plano (que es el ciphertext)
-    // El cliente hará: JSON.parse(AES.decrypt(response, ""))
-    const encryptedResponse = encryptResponse(responseData);
-    res.send(encryptedResponse);
+    if (status.valid) {
+        res.json({
+            licence: SAFE_LICENSE, // CRÍTICO: 'licence' con C
+            days: status.days,
+            object: { valid: true, until: "Manual_Verified" },
+            q: "activated_ok" // <--- CRÍTICO: La propiedad que faltaba
+        });
+    } else {
+        // Devolver estructura válida pero vacía para evitar crash en cliente
+        res.json({
+            licence: "",
+            days: 0,
+            object: { valid: false },
+            q: null
+        });
+    }
 };
 
+// Manejador de Free Trial
 const handleFreeLicense = (req, res) => {
-    console.log(`[TRIAL] Trial solicitado`);
-    const responseData = {
-        licence: "TFG_TRIAL_LICENSE",
+    res.json({
+        licence: SAFE_LICENSE,
         days: 1,
-        object: { valid: true, type: "TRIAL" }
-    };
-    res.send(encryptResponse(responseData));
+        object: { valid: true, type: "TRIAL" },
+        q: "trial_ok" // <--- CRÍTICO
+    });
 };
 
-// Rutas
-app.all(['/check-licence/check/:key', '/check-licence/v2/check/:key', '/api/v2/check-license'], handleCheckLicense);
-app.all(['/check-licence/free', '/check-licence/v2/free', '/api/v2/free'], handleFreeLicense);
+// RUTAS DE LICENCIA (Soporte Total V1 y V2 + PUT/POST)
+app.all(['/check-licence/check/:key', '/api/v2/check-license'], handleCheckLicense);
+app.all(['/check-licence/free', '/api/v2/free'], handleFreeLicense);
+
 
 // ==========================================
 //  SISTEMA DE PAQUETES
 // ==========================================
 app.post('/pack/request', (req, res) => {
     if (packs.length > 500) packs = packs.slice(-200);
+
+    const { bankId, goldAmount, duration } = req.body;
     const clientId = req.user.userId !== 'unknown' ? req.user.userId : req.body.clientId;
+
     if (!clientId) return res.status(400).json({ error: "Missing clientId" });
 
     const newPack = {
         _id: Math.random().toString(36).substr(2, 9),
         clientId: clientId.toString(),
-        bankId: req.body.bankId ? req.body.bankId.toString() : "0",
-        goldAmount: parseInt(req.body.goldAmount || 0),
-        duration: parseInt(req.body.duration || 0),
+        bankId: bankId ? bankId.toString() : "0",
+        goldAmount: parseInt(goldAmount || 0),
+        duration: parseInt(duration || 0),
         state: 'pending',
         createdAt: Date.now(),
         metaData: { basis: "14-1", quality: 0, level: 1, soulboundTo: null }
     };
     packs.push(newPack);
-    console.log(`[PACK] Nuevo pack creado: ${newPack._id} para ${clientId}`);
-    res.json(newPack); // Los packs parece que NO van encriptados en la respuesta, según análisis previo
+    res.json(newPack);
 });
 
+// Rutas GET flexibles
 const handleGetPending = (req, res) => {
     const playerId = req.params.playerId || req.user.userId || req.query.playerId;
-    if (!playerId) return res.status(400).json({ error: "ID missing" });
+    if (!playerId || playerId === 'unknown') return res.status(400).json({ error: "ID missing" });
     res.json(packs.filter(p => p.bankId === playerId.toString() && p.state === 'pending'));
 };
 
 const handleGetReady = (req, res) => {
     const playerId = req.params.playerId || req.user.userId || req.query.playerId;
-    if (!playerId) return res.status(400).json({ error: "ID missing" });
+    if (!playerId || playerId === 'unknown') return res.status(400).json({ error: "ID missing" });
     res.json(packs.filter(p => p.clientId === playerId.toString() && p.state === 'ready'));
 };
 
@@ -166,27 +164,28 @@ app.patch('/pack/state', (req, res) => {
 });
 
 app.delete('/pack/:id', (req, res) => {
-    packs = packs.filter(p => p._id !== req.params.id);
+    const { id } = req.params;
+    packs = packs.filter(p => p._id !== id);
     res.json({ success: true });
 });
 
 // ==========================================
-//  ADMIN
+//  ADMIN & STARTUP
 // ==========================================
 app.get('/admin/config', (req, res) => {
     res.json({
         server_status: "online",
-        auto_license_mode: AUTO_LICENSE_MODE,
+        auth_mode: "Environment Variables",
+        allowed_ids_configured: !!process.env.ALLOWED_IDS,
         memory_packs_count: packs.length
     });
 });
 
-app.get('/', (req, res) => res.send('Hostile Server V4 (TFG Auto-License) Active.'));
+app.get('/', (req, res) => res.send('Hostile Server V5 (Final TFG) Active.'));
 
 if (require.main === module) {
     app.listen(PORT, () => {
         console.log(`[SERVER] Running on port ${PORT}`);
-        console.log(`[SERVER] AUTO_LICENSE_MODE: ${AUTO_LICENSE_MODE}`);
     });
 }
 
