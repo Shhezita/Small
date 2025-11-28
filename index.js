@@ -1,119 +1,100 @@
 const express = require('express');
-const bodyParser = require('body-parser');
-const cors = require('cors');
+const cors = require('cors'); // body-parser ya no es necesario en Express 4.16+
 const CryptoJS = require("crypto-js");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
-app.use(cors());
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
-
 // ==========================================
-//  BASE DE DATOS (IN-MEMORY)
+//  CONFIGURACIÓN
 // ==========================================
-// NOTA: En Vercel, la memoria se borra. 
-// Los paquetes 'packs' se perderán si el servidor se duerme.
-let packs = [];
 
-// CONSTANTES
-// Texto decodificado: "This is a fake license for testing purposes" repetido.
+// 1. Modernización: Express nativo en lugar de body-parser
+app.use(cors({ origin: "*" })); // Permite peticiones desde cualquier origen (el juego)
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Constantes
 const SAFE_LICENSE = "VGhpcyBpcyBhIGZha2UgbGljZW5zZSBmb3IgdGVzdGluZyBwdXJwb3Nlcw==VGhpcyBpcyBhIGZha2UgbGljZW5zZSBmb3IgdGVzdGluZyBwdXJwb3Nlcw==";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin123";
+
+// Base de datos volátil (Packs)
+// NOTA: En Vercel se borra al dormir la instancia.
+let packs = [];
 
 // ==========================================
 //  MIDDLEWARE DE AUTENTICACIÓN
 // ==========================================
 const verifyXToken = (req, res, next) => {
-    // Verificar contraseña para rutas de admin
+    // Proteger rutas de admin
     if (req.path.startsWith('/admin')) {
         const authHeader = req.headers['authorization'];
         if (authHeader !== `Bearer ${ADMIN_PASSWORD}`) {
-            return res.status(403).json({ error: "Forbidden: Admin Access Only" });
+            return res.status(403).json({ error: "Forbidden" });
         }
         return next();
     }
 
-    // Intentar obtener token del header (case-insensitive en Express)
+    // Verificar token del juego
     const token = req.headers['x-token'];
-
     if (!token) {
         req.user = { userId: 'unknown' };
         return next();
     }
 
     try {
-        // Desencriptar con clave vacía "" como se descubrió en el análisis
         const bytes = CryptoJS.AES.decrypt(token, "");
-        const decryptedData = JSON.parse(bytes.toString(CryptoJS.enc.Utf8));
-        req.user = decryptedData;
-        // console.log(`[AUTH] User authenticated: ${req.user.userId}`);
+        const decryptedString = bytes.toString(CryptoJS.enc.Utf8);
+        
+        if (!decryptedString) throw new Error("Decryption empty");
+        
+        req.user = JSON.parse(decryptedString); // { userId, serverId, language }
         next();
     } catch (error) {
-        console.error("[AUTH] Token corrupto o clave incorrecta", error.message);
-        // Si falla la desencriptación, tratamos como desconocido o error?
-        // El usuario pidió: "Si no está en la lista ➝ Devuelve error o licencia caducada."
-        // Pero si el token es inválido, mejor rechazar.
-        // Sin embargo, para robustez, dejaremos pasar como 'unknown' si falla, 
-        // y la licencia fallará después.
+        console.error(`[AUTH] Fallo token: ${error.message}`);
         req.user = { userId: 'unknown' };
-        next();
+        next(); // Dejamos pasar como unknown, la licencia fallará después
     }
 };
 
 app.use(verifyXToken);
 
 // ==========================================
-//  SISTEMA DE VERIFICACIÓN (MANUAL POR ENV VAR)
+//  LÓGICA DE LICENCIAS (VARIABLES DE ENTORNO)
 // ==========================================
-
 const checkUserLicense = (userId) => {
-    // 1. Leer lista de IDs permitidos desde Variables de Entorno
-    // Formato: ALLOWED_IDS="12345,67890,55555"
+    // 1. Leer lista de IDs desde Vercel Environment Variables
+    // Configurar en Vercel: Key="ALLOWED_IDS", Value="12345,67890,11111"
     const allowedIdsString = process.env.ALLOWED_IDS || process.env.ALLOWED_PLAYERS || "";
     const allowedIds = allowedIdsString.split(',').map(id => id.trim());
 
-    // 2. Verificar si el ID está en la lista
+    // 2. Comprobar si existe
     if (allowedIds.includes(userId.toString())) {
-        return {
-            valid: true,
-            days: 365, // Damos 1 año por defecto a los IDs manuales
-            type: 'PRO_MANUAL'
-        };
+        return { valid: true, days: 365 };
     }
-
     return { valid: false, days: 0 };
 };
 
-// ==========================================
-//  RUTAS DE LICENCIA
-// ==========================================
-
-// Función manejadora para check
+// Manejador unificado para todas las rutas de check
 const handleCheckLicense = (req, res) => {
-    const { userId } = req.user;
-    // Si no hay userId (petición manual sin token), intentar leer del body para pruebas
-    const targetId = userId !== 'unknown' ? userId : req.body.playerId;
+    // Prioridad: Token > Body (para pruebas manuales)
+    const targetId = (req.user.userId !== 'unknown') ? req.user.userId : req.body.playerId;
 
     if (!targetId) {
-        console.log("[LICENCIA] No Player ID found in request");
-        return res.status(400).json({ error: "No Player ID found" });
+        return res.status(400).json({ error: "No Player ID identified" });
     }
 
-    console.log(`[LICENCIA] Verificando ID: ${targetId}`);
+    console.log(`[LICENCIA] Check ID: ${targetId}`);
     const status = checkUserLicense(targetId);
 
     if (status.valid) {
-        console.log(`[LICENCIA] ID ${targetId} es VÁLIDO`);
         res.json({
             licence: SAFE_LICENSE,
             days: status.days,
-            object: { valid: true, until: "Manual/EnvVar" }
+            object: { valid: true, until: "Manual_Env_Auth" }
         });
     } else {
-        console.log(`[LICENCIA] ID ${targetId} es INVÁLIDO`);
+        // Respuesta de fallo "silenciosa" (sin licencia válida)
         res.json({
             licence: "",
             days: 0,
@@ -122,9 +103,9 @@ const handleCheckLicense = (req, res) => {
     }
 };
 
-// Función manejadora para free
+// Manejador unificado para Free Trial
 const handleFreeLicense = (req, res) => {
-    console.log(`[LICENCIA] Free license requested`);
+    console.log(`[TRIAL] Trial solicitado por ${req.user.userId}`);
     res.json({
         licence: SAFE_LICENSE,
         days: 1,
@@ -132,29 +113,22 @@ const handleFreeLicense = (req, res) => {
     });
 };
 
-// Rutas V1
-app.put('/check-licence/check/:key', handleCheckLicense);
-app.post('/check-licence/free', handleFreeLicense);
-
-// Rutas V2 (Detectadas en content-ui)
-app.put('/check-licence/v2/check/:key', handleCheckLicense);
-app.post('/check-licence/v2/free', handleFreeLicense);
-
+// --- RUTAS DE LICENCIA (Soporte Total V1 y V2) ---
+// Aceptamos PUT y POST para asegurar compatibilidad con cualquier versión del script
+app.all(['/check-licence/check/:key', '/check-licence/v2/check/:key', '/api/v2/check-license'], handleCheckLicense);
+app.all(['/check-licence/free', '/check-licence/v2/free', '/api/v2/free'], handleFreeLicense);
 
 // ==========================================
-//  RUTAS DE PAQUETES (PACK SYSTEM)
+//  SISTEMA DE PAQUETES
 // ==========================================
-
 app.post('/pack/request', (req, res) => {
+    // Limpieza preventiva de memoria para Vercel (evitar fugas en instancias calientes)
+    if (packs.length > 500) packs = packs.slice(-200);
+
     const { bankId, goldAmount, duration } = req.body;
-    // Usar userId del token si existe, sino del body (clientId)
     const clientId = req.user.userId !== 'unknown' ? req.user.userId : req.body.clientId;
 
-    if (!clientId) {
-        return res.status(400).json({ error: "Missing clientId" });
-    }
-
-    console.log(`[PACK] Request received from ${clientId}`);
+    if (!clientId) return res.status(400).json({ error: "Missing clientId" });
 
     const newPack = {
         _id: Math.random().toString(36).substr(2, 9),
@@ -167,32 +141,31 @@ app.post('/pack/request', (req, res) => {
         metaData: { basis: "14-1", quality: 0, level: 1, soulboundTo: null }
     };
     packs.push(newPack);
+    console.log(`[PACK] Nuevo pack creado: ${newPack._id}`);
     res.json(newPack);
 });
 
-app.get('/pack/pending/:playerId', (req, res) => {
-    const { playerId } = req.params;
-    // Pending packs are for the "bank" (who gives gold) ?? 
-    // Or packs that are pending for the player?
-    // Based on user pseudocode: p.bankId === playerId
-    const pendingPacks = packs.filter(p => p.bankId === playerId.toString() && p.state === 'pending');
-    res.json(pendingPacks);
-});
+// Rutas GET flexibles (con y sin param)
+const handleGetPending = (req, res) => {
+    const playerId = req.params.playerId || req.user.userId || req.query.playerId;
+    if (!playerId || playerId === 'unknown') return res.status(400).json({ error: "ID missing" });
+    res.json(packs.filter(p => p.bankId === playerId.toString() && p.state === 'pending'));
+};
 
-app.get('/pack/ready/:playerId', (req, res) => {
-    const { playerId } = req.params;
-    // Ready packs are for the client (who requested gold) ??
-    // Based on user pseudocode: p.clientId === playerId
-    const readyPacks = packs.filter(p => p.clientId === playerId.toString() && p.state === 'ready');
-    res.json(readyPacks);
-});
+const handleGetReady = (req, res) => {
+    const playerId = req.params.playerId || req.user.userId || req.query.playerId;
+    if (!playerId || playerId === 'unknown') return res.status(400).json({ error: "ID missing" });
+    res.json(packs.filter(p => p.clientId === playerId.toString() && p.state === 'ready'));
+};
+
+app.get(['/pack/pending/:playerId', '/pack/pending'], handleGetPending);
+app.get(['/pack/ready/:playerId', '/pack/ready'], handleGetReady);
 
 app.patch('/pack/state', (req, res) => {
     const { packId, state } = req.body;
     const packIndex = packs.findIndex(p => p._id === packId);
     if (packIndex !== -1) {
         packs[packIndex].state = state;
-        console.log(`[PACK] State updated for ${packId} to ${state}`);
         res.json({ success: true });
     } else {
         res.status(404).json({ error: "Pack not found" });
@@ -201,38 +174,28 @@ app.patch('/pack/state', (req, res) => {
 
 app.delete('/pack/:id', (req, res) => {
     const { id } = req.params;
-    const initialLength = packs.length;
     packs = packs.filter(p => p._id !== id);
-    if (packs.length < initialLength) {
-        console.log(`[PACK] Deleted pack ${id}`);
-        res.json({ success: true });
-    } else {
-        res.status(404).json({ error: "Pack not found" });
-    }
+    res.json({ success: true });
 });
 
 // ==========================================
-//  PANEL ADMIN (SOLO INFORMATIVO)
+//  ADMIN & STARTUP
 // ==========================================
 app.get('/admin/config', (req, res) => {
-    const allowedIdsString = process.env.ALLOWED_IDS || process.env.ALLOWED_PLAYERS || "";
+    // Muestra configuración actual para depuración
     res.json({
-        allowedIds: allowedIdsString ? allowedIdsString.split(',') : [],
-        activePacksInMemory: packs.length,
-        packs: packs // Show packs for debugging
+        server_status: "online",
+        auth_mode: "Environment Variables",
+        allowed_ids_configured: !!process.env.ALLOWED_IDS,
+        memory_packs_count: packs.length
     });
 });
 
-// Root route
-app.get('/', (req, res) => {
-    res.send('Hostile Server V2 is active.');
-});
+app.get('/', (req, res) => res.send('Hostile Server V3 (TFG Edition) Active.'));
 
-// Start server
 if (require.main === module) {
     app.listen(PORT, () => {
-        console.log(`\n[SERVER] Hostile Server running on http://localhost:${PORT}`);
-        console.log(`[SERVER] Allowed IDs: ${process.env.ALLOWED_IDS || process.env.ALLOWED_PLAYERS || "None set"}`);
+        console.log(`[SERVER] Running on port ${PORT}`);
     });
 }
 
