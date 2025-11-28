@@ -85,6 +85,19 @@ if (TELEGRAM_TOKEN) {
             botStatus = "Online";
             botUsername = me.username;
             console.log(`[TELEGRAM] Bot Connected! Name: ${me.first_name}, Username: @${me.username}`);
+
+            // Register commands with Telegram API so they show in the menu
+            bot.setMyCommands([
+                { command: '/start', description: 'Start the bot or link account' },
+                { command: '/status', description: 'Check connection status' },
+                { command: '/unlink', description: 'Unlink your account' },
+                { command: '/help', description: 'Show help message' }
+            ]).then(() => {
+                console.log("[TELEGRAM] Commands registered successfully");
+            }).catch((err) => {
+                console.error(`[TELEGRAM] Failed to register commands: ${err.message}`);
+            });
+
         }).catch((err) => {
             botStatus = `Error: ${err.message}`;
             console.error(`[TELEGRAM] Failed to connect: ${err.message}`);
