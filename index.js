@@ -152,82 +152,39 @@ if (TELEGRAM_TOKEN) {
         });
 
         // Command: /start (with or without token)
-        bot.onText(/\/start(?: (.+))?/, (msg, match) => {
-            const chatId = msg.chat.id;
-            const token = match[1] ? match[1].trim() : null;
-
-            if (token) {
-                console.log(`[TELEGRAM] Received /start with token: ${token}`);
-                // Verify the token sent from Game (could be initial temporary token or existing)
-                // For initial linking, we expect a valid userId.
-                // We try to decode it as a stateless token first.
-                let userId = null;
-                const decoded = verifyStatelessToken(token);
-                if (decoded) userId = decoded.userId;
-
-                // If not a stateless token, maybe it's a raw ID? (Less secure, but possible if user types it)
-                // We'll stick to requiring a generated token from the game.
-
-                if (userId) {
-                    telegramUsers.set(userId, chatId);
-                    telegramChats.set(chatId, userId);
-
-                    // Generate NEW Stateless Token WITH ChatID
-                    const newToken = generateStatelessToken(userId, chatId);
-
-                    bot.sendMessage(chatId, `✅ *Account Linked!*
-                    
-⚠️ *IMPORTANT ACTION REQUIRED* ⚠️
-Since the server is stateless (Vercel), you MUST update your game settings with this new code to receive notifications:
-
-\`${newToken}\`
-
-1. Copy the code above.
-2. Go to Game Settings -> Telegram.
-3. Paste it into the "Access Token" field.
-`, { parse_mode: 'Markdown' });
-
-                    console.log(`[TELEGRAM] Linked chat ${chatId} to user ${userId}`);
-                } else {
-                    bot.sendMessage(chatId, "❌ Invalid or expired token. Please generate a new one from the game settings.");
-                }
-            } else {
-                if (telegramChats.has(chatId)) {
-                    bot.sendMessage(chatId, "👋 You are already linked! Type /status to check.");
-                } else {
-                    bot.sendMessage(chatId, "👋 Welcome! To link, click 'Get Access Token' in game settings, then open the bot link.");
-                }
+        bot.sendMessage(chatId, "👋 Welcome! To link, click 'Get Access Token' in game settings, then open the bot link.");
+    }
             }
         });
 
-        bot.onText(/\/help/, (msg) => {
-            bot.sendMessage(msg.chat.id, "Commands:\n/start - Link\n/status - Check\n/unlink - Unlink");
-        });
+bot.onText(/\/help/, (msg) => {
+    bot.sendMessage(msg.chat.id, "Commands:\n/start - Link\n/status - Check\n/unlink - Unlink");
+});
 
-        bot.onText(/\/status/, (msg) => {
-            const chatId = msg.chat.id;
-            if (telegramChats.has(chatId)) {
-                bot.sendMessage(chatId, `✅ Linked to User ID: \`${telegramChats.get(chatId)}\``, { parse_mode: 'Markdown' });
-            } else {
-                bot.sendMessage(chatId, "❌ Not linked.");
-            }
-        });
+bot.onText(/\/status/, (msg) => {
+    const chatId = msg.chat.id;
+    if (telegramChats.has(chatId)) {
+        bot.sendMessage(chatId, `✅ Linked to User ID: \`${telegramChats.get(chatId)}\``, { parse_mode: 'Markdown' });
+    } else {
+        bot.sendMessage(chatId, "❌ Not linked.");
+    }
+});
 
-        bot.onText(/\/unlink/, (msg) => {
-            const chatId = msg.chat.id;
-            if (telegramChats.has(chatId)) {
-                const userId = telegramChats.get(chatId);
-                telegramUsers.delete(userId);
-                telegramChats.delete(chatId);
-                bot.sendMessage(chatId, "🔓 Unlinked.");
-            } else {
-                bot.sendMessage(chatId, "Not linked.");
-            }
-        });
+bot.onText(/\/unlink/, (msg) => {
+    const chatId = msg.chat.id;
+    if (telegramChats.has(chatId)) {
+        const userId = telegramChats.get(chatId);
+        telegramUsers.delete(userId);
+        telegramChats.delete(chatId);
+        bot.sendMessage(chatId, "🔓 Unlinked.");
+    } else {
+        bot.sendMessage(chatId, "Not linked.");
+    }
+});
 
     } catch (error) {
-        console.error("[TELEGRAM] Init Error:", error.message);
-    }
+    console.error("[TELEGRAM] Init Error:", error.message);
+}
 }
 
 // ==========================================
