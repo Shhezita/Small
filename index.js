@@ -173,7 +173,7 @@ const checkUserLicense = (userId) => {
     // Compare as strings to be safe
     if (allowedIds.includes(userId.toString())) {
         console.log(`[DEBUG] Match FOUND! Granting Pro License.`);
-        return { valid: true, days: 9999, type: 'PRO_MANUAL' };
+        return { valid: true, days: 999, type: 'PRO_MANUAL' };
     }
     console.log(`[DEBUG] Match FAILED. Denying Access.`);
     return { valid: false, days: 0, type: 'NONE' };
