@@ -439,14 +439,14 @@ const handleTelegramNotification = async (req, res) => {
         // Handle Private Messages (pm)
         if (req.body.pm && Array.isArray(req.body.pm)) {
             req.body.pm.forEach(msg => {
-                messagesToSend.push(`✉️ **New Private Message**\nFrom: _${msg.from}_\n\n"${msg.content}"`);
+                messagesToSend.push(`✉️ **New Private Message**\nFrom: ${msg.from}\n\n"${msg.content}"`);
             });
         }
 
         // Handle Guild Messages (gm)
         if (req.body.gm && Array.isArray(req.body.gm)) {
             req.body.gm.forEach(msg => {
-                messagesToSend.push(`📜 **New Guild Message**\nFrom: _${msg.from}_\n\n"${msg.content}"`);
+                messagesToSend.push(`📜 **New Guild Message**\nFrom: ${msg.from}\n\n"${msg.content}"`);
             });
         }
 
