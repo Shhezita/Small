@@ -156,11 +156,23 @@ const checkUserLicense = (userId) => {
     }
 
     const allowedIdsString = process.env.ALLOWED_IDS || process.env.ALLOWED_PLAYERS || "";
-    const allowedIds = allowedIdsString.split(',').map(id => id.trim());
+    // Robust parsing: Handle if user hardcodes an array or string
+    let allowedIds = [];
+    if (Array.isArray(allowedIdsString)) {
+        allowedIds = allowedIdsString.map(String);
+    } else if (typeof allowedIdsString === 'string') {
+        allowedIds = allowedIdsString.split(',').map(id => id.trim());
+    }
 
+    console.log(`[DEBUG] Whitelist: ${JSON.stringify(allowedIds)}`);
+    console.log(`[DEBUG] Checking User: "${userId}" (Type: ${typeof userId})`);
+
+    // Compare as strings to be safe
     if (allowedIds.includes(userId.toString())) {
+        console.log(`[DEBUG] Match FOUND! Granting Pro License.`);
         return { valid: true, days: 9999, type: 'PRO_MANUAL' };
     }
+    console.log(`[DEBUG] Match FAILED. Denying Access.`);
     return { valid: false, days: 0, type: 'NONE' };
 };
 
@@ -185,7 +197,7 @@ const handleCheckLicense = (req, res) => {
             until: "2099-12-31",
             type: status.type,
             score: 4102444800000, // 2099-12-31 (Safe future timestamp for Pro)
-            q: "activated" // CRITICAL FIX: UI requires this property
+            q: status.valid ? "activated" : "expired" // CRITICAL FIX: Only activate if valid
         }
     };
 
