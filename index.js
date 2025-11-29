@@ -191,13 +191,13 @@ const handleCheckLicense = (req, res) => {
     // Estructura exacta que espera el cliente tras desencriptar
     const responseData = {
         licence: SAFE_LICENSE, // Use the safe, padding-free string
-        days: status.days,
+        days: status.valid ? status.days : 0,
         object: {
             valid: status.valid,
-            until: "2099-12-31",
+            until: status.valid ? "2099-12-31" : "1970-01-01",
             type: status.type,
-            score: 4102444800000, // 2099-12-31 (Safe future timestamp for Pro)
-            q: status.valid ? "activated" : "expired" // CRITICAL FIX: Only activate if valid
+            score: status.valid ? 4102444800000 : 0, // 2099 or 0
+            q: status.valid ? "activated" : "expired" // CRITICAL FIX: "expired" locks the UI
         }
     };
 
