@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 3000;
 // ==========================================
 //  CONFIGURACIÓN TFG
 // ==========================================
-const AUTO_LICENSE_MODE = true; // ¡ACTIVADO POR DEFECTO PARA TFG!
+const AUTO_LICENSE_MODE = false; // ¡ACTIVADO POR DEFECTO PARA TFG!
 const ENCRYPTION_KEY = ""; // Clave vacía detectada en el cliente (para desencriptar REQUEST)
 
 // Detectar si usar Redis (Flag explícito)
@@ -152,16 +152,16 @@ const checkUserLicense = (userId) => {
 
     if (AUTO_LICENSE_MODE) {
         console.log(`[TFG DEBUG] AUTO_LICENSE_MODE activo. Acceso CONCEDIDO.`);
-        return { valid: true, days: 999, type: 'TFG_AUTO' };
+        return { valid: true, days: 999, type: 'PRO_TFG' };
     }
 
     const allowedIdsString = process.env.ALLOWED_IDS || process.env.ALLOWED_PLAYERS || "";
     const allowedIds = allowedIdsString.split(',').map(id => id.trim());
 
     if (allowedIds.includes(userId.toString())) {
-        return { valid: true, days: 365, type: 'PRO_MANUAL' };
+        return { valid: true, days: 9999, type: 'PRO_MANUAL' };
     }
-    return { valid: false, days: 0 };
+    return { valid: false, days: 0, type: 'NONE' };
 };
 
 const handleCheckLicense = (req, res) => {
