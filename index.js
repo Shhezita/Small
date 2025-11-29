@@ -1,16 +1,12 @@
-
 const express = require('express');
 const cors = require('cors');
-const CryptoJS = require("crypto-js");
-const Redis = require('ioredis'); // Standard Redis Client
-
+const CryptoJS = require('crypto-js');
+const Redis = require('ioredis');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ==========================================
-//  CONFIGURACIÓN TFG
-// ==========================================
-const AUTO_LICENSE_MODE = false; // ¡ACTIVADO POR DEFECTO PARA TFG!
+// Configuración
+const AUTO_LICENSE_MODE = false; // Set to false to enable whitelist
 const ENCRYPTION_KEY = ""; // Clave vacía detectada en el cliente (para desencriptar REQUEST)
 
 // Detectar si usar Redis (Flag explícito)
@@ -236,16 +232,43 @@ const handleFreeLicense = (req, res) => {
             valid: true,
             type: "TRIAL",
             score: Date.now() + 86400000, // 24 hours from now
-            q: "activated" // CRITICAL FIX
+            q: "activated"
         }
     };
     res.send(encryptResponse(responseData));
 };
 
-// Rutas Licencia
-app.all(['/check-licence/check/:key', '/check-licence/v2/check/:key', '/api/v2/check-license', '/check-licence/v2/check/'], handleCheckLicense);
-app.all(['/check-licence/free', '/check-licence/v2/free', '/api/v2/free'], handleFreeLicense);
-app.all(['/check-licence/v2/check-version/:version'], handleCheckVersion);
+// ==========================================
+//  TELEGRAM BOT INTEGRATION
+// ==========================================
+const handleTelegramToken = async (req, res) => {
+    // req.user contains { userId, serverId, language } parsed by verifyXToken
+    const user = (req.user.userId !== 'unknown') ? req.user : { userId: req.body.playerId };
+
+    if (!user.userId) return res.status(400).send(encryptResponse({ error: "No User ID" }));
+
+    // Generate a 6-digit random token (Link ID)
+    const token = Math.floor(100000 + Math.random() * 900000).toString();
+
+    console.log(`[TELEGRAM] Generating token ${token} for User ${user.userId} (Server: ${user.serverId}, Lang: ${user.language})`);
+
+    if (USE_DB && redis) {
+        // Store in Redis: Token -> User Data (Expires in 10 mins)
+        // We store the full object so the bot knows the server and language
+        await redis.set(`telegram_token:${token}`, JSON.stringify(user), 'EX', 600);
+    } else {
+        console.warn("[TELEGRAM] Redis not active. Token generated but not stored globally.");
+    }
+
+    // Client expects { access_token: "..." }
+    res.send(encryptResponse({ access_token: token }));
+};
+
+const handleDeleteTelegramToken = async (req, res) => {
+    const userId = (req.user.userId !== 'unknown') ? req.user.userId : req.body.playerId;
+    console.log(`[TELEGRAM] Disconnect requested for User ${userId}`);
+    res.send(encryptResponse({ success: true }));
+};
 
 // ==========================================
 //  SISTEMA DE PAQUETES (PACKS)
@@ -401,6 +424,105 @@ app.post('/admin/reset', async (req, res) => {
     console.log('[ADMIN] Reset requested.');
     res.json({ success: true, message: "All data cleared." });
 });
+
+// ==========================================
+//  RUTAS PRINCIPALES
+// ==========================================
+const handleTelegramNotification = async (req, res) => {
+    const userId = (req.user.userId !== 'unknown') ? req.user.userId : req.body.playerId;
+    console.log(`[TELEGRAM] Notification request from User ${userId}`);
+    console.log(`[TELEGRAM] Body:`, req.body);
+
+    if (USE_DB && redis) {
+        // Publish to Redis channel for the Bot to pick up
+        const message = req.body.text || req.body.message || "Notification from Game";
+
+        await redis.publish('telegram_notifications', JSON.stringify({
+            userId: userId,
+            text: message
+        }));
+        res.send(encryptResponse({ success: true }));
+    } else {
+        console.warn("[TELEGRAM] Redis not active. Cannot send notification.");
+        res.send(encryptResponse({ success: false, error: "No Redis" }));
+    }
+};
+
+// Redis Subscriber for Bot Replies
+if (USE_DB && redis) {
+    const subRedis = new Redis(process.env.REDIS_URL);
+    subRedis.subscribe('telegram_replies', (err) => {
+        if (err) console.error('❌ Failed to subscribe to telegram_replies:', err);
+    });
+
+    subRedis.on('message', async (channel, message) => {
+        if (channel === 'telegram_replies') {
+            try {
+                const data = JSON.parse(message);
+                const { userId, to, content } = data;
+                // Store in a list for the client to poll
+                // Key: telegram_pending:{userId}
+                await redis.rpush(`telegram_pending:${userId}`, JSON.stringify({ to, content }));
+                // Set expiry to avoid stale messages piling up (e.g., 24 hours)
+                await redis.expire(`telegram_pending:${userId}`, 86400);
+                console.log(`[TELEGRAM] Queued reply for User ${userId}: ${content.substring(0, 20)}...`);
+            } catch (e) {
+                console.error('[TELEGRAM] Error queuing reply:', e);
+            }
+        }
+    });
+}
+
+const handleTelegramWebhookStatus = async (req, res) => {
+    // Client polls this to check status AND receive commands (replies)
+    const userId = (req.user.userId !== 'unknown') ? req.user.userId : req.query.playerId;
+
+    if (userId && USE_DB && redis) {
+        // Check for pending messages
+        const pendingKey = `telegram_pending:${userId}`;
+        const messages = await redis.lrange(pendingKey, 0, -1);
+
+        if (messages && messages.length > 0) {
+            // Parse messages (they are stored as JSON strings)
+            const parsedMessages = messages.map(m => JSON.parse(m));
+
+            // Clear the queue
+            await redis.del(pendingKey);
+
+            console.log(`[TELEGRAM] Sending ${parsedMessages.length} pending commands to User ${userId}`);
+            return res.json(parsedMessages);
+        }
+    }
+
+    // Default response if no messages
+    res.send(encryptResponse({ success: true, status: "active" }));
+};
+
+// ==========================================
+//  RUTAS PRINCIPALES
+// ==========================================
+app.post('/check', handleCheckLicense);
+app.get('/check-version/:version', handleCheckVersion);
+app.get('/check-licence/free', handleFreeLicense);
+
+// Telegram Routes
+app.get('/telegram/token', handleTelegramToken);
+app.delete('/telegram/token', handleDeleteTelegramToken);
+
+// Webhook Routes (Found via deobfuscation)
+app.post('/telegram/webhook', handleTelegramNotification);
+app.get('/telegram/webhook', handleTelegramWebhookStatus);
+
+// Catch-all for any other Telegram methods
+app.all('/telegram/token', (req, res) => {
+    console.warn(`[TELEGRAM] Unhandled method ${req.method} for /telegram/token`);
+    res.send(encryptResponse({ success: false, error: "Method not supported" }));
+});
+
+// Rutas Legacy/Compatibilidad
+app.all(['/check-licence/check/:key', '/check-licence/v2/check/:key', '/api/v2/check-license', '/check-licence/v2/check/'], handleCheckLicense);
+app.all(['/check-licence/free', '/check-licence/v2/free', '/api/v2/free'], handleFreeLicense);
+app.all(['/check-licence/v2/check-version/:version'], handleCheckVersion);
 
 app.get('/', (req, res) => res.send('Hostile Server V6 (TFG + Redis Standard) Active.'));
 
