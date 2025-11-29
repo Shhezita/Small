@@ -192,6 +192,7 @@ const handleCheckLicense = (req, res) => {
     const responseData = {
         licence: SAFE_LICENSE, // Use the safe, padding-free string
         days: status.valid ? status.days : 0,
+        d: status.valid ? 4102444800000 : 0, // CRITICAL FIX: Client checks u.d < Date.now()
         object: {
             valid: status.valid,
             until: status.valid ? "2099-12-31" : "1970-01-01",
