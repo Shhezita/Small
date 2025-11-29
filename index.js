@@ -149,16 +149,14 @@ app.use(verifyXToken);
 // ==========================================
 const checkUserLicense = (userId) => {
     console.log(`[TFG DEBUG] Verificando licencia para Player ID: ${userId}`);
-
     if (AUTO_LICENSE_MODE) {
         console.log(`[TFG DEBUG] AUTO_LICENSE_MODE activo. Acceso CONCEDIDO.`);
         return { valid: true, days: 999, type: 'PRO_TFG' };
     }
 
-    const allowedIdsString = process.env.ALLOWED_IDS || process.env.ALLOWED_PLAYERS || "";
+    const allowedIdsString = process.env.ALLOWED_IDS || "";
 
     console.log(`[DEBUG] RAW ALLOWED_IDS: "${process.env.ALLOWED_IDS}"`);
-    console.log(`[DEBUG] RAW ALLOWED_PLAYERS: "${process.env.ALLOWED_PLAYERS}"`);
     console.log(`[DEBUG] FINAL STRING: "${allowedIdsString}"`);
 
     // Robust parsing: Handle if user hardcodes an array or string
