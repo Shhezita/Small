@@ -1,3 +1,4 @@
+
 const express = require('express');
 const cors = require('cors');
 const CryptoJS = require("crypto-js");
@@ -183,6 +184,7 @@ const handleCheckLicense = (req, res) => {
             valid: status.valid,
             until: "2099-12-31",
             type: status.type,
+            score: 4102444800000, // 2099-12-31 (Safe future timestamp for Pro)
             q: "activated" // CRITICAL FIX: UI requires this property
         }
     };
@@ -217,6 +219,7 @@ const handleFreeLicense = (req, res) => {
         object: {
             valid: true,
             type: "TRIAL",
+            score: Date.now() + 86400000, // 24 hours from now
             q: "activated" // CRITICAL FIX
         }
     };
