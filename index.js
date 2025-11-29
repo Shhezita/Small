@@ -488,9 +488,30 @@ const handleTelegramNotification = async (req, res) => {
     }
 };
 
-// Redis Subscriber for Bot Replies - REMOVED (Incompatible with Serverless/Vercel)
-// The bot now pushes directly to the 'telegram_pending:{userId}' list.
-// The server only needs to read from this list in handleTelegramWebhookStatus.
+// Redis Subscriber for Bot Replies
+if (USE_DB && redis) {
+    const subRedis = new Redis(process.env.REDIS_URL);
+    subRedis.subscribe('telegram_replies', (err) => {
+        if (err) console.error('❌ Failed to subscribe to telegram_replies:', err);
+    });
+
+    subRedis.on('message', async (channel, message) => {
+        if (channel === 'telegram_replies') {
+            try {
+                const data = JSON.parse(message);
+                const { userId, to, content } = data;
+                // Store in a list for the client to poll
+                // Key: telegram_pending:{userId}
+                await redis.rpush(`telegram_pending:${userId}`, JSON.stringify({ to, content }));
+                // Set expiry to avoid stale messages piling up (e.g., 24 hours)
+                await redis.expire(`telegram_pending:${userId}`, 86400);
+                console.log(`[TELEGRAM] Queued reply for User ${userId}: ${content.substring(0, 20)}...`);
+            } catch (e) {
+                console.error('[TELEGRAM] Error queuing reply:', e);
+            }
+        }
+    });
+}
 
 const handleTelegramWebhookStatus = async (req, res) => {
     // Client polls this to check status AND receive commands (replies)
