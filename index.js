@@ -189,6 +189,9 @@ const handleCheckLicense = (req, res) => {
 
     // IMPORTANTE: Enviamos texto plano (que es el ciphertext)
     const encryptedResponse = encryptResponse(responseData);
+
+    // Cacheamos la licencia por 999 días para evitar checks cada 2 minutos
+    res.set('Cache-Control', 'public, max-age=86313600');
     res.send(encryptedResponse);
 };
 
