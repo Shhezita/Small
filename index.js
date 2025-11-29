@@ -431,15 +431,55 @@ app.post('/admin/reset', async (req, res) => {
 const handleTelegramNotification = async (req, res) => {
     const userId = (req.user.userId !== 'unknown') ? req.user.userId : req.body.playerId;
     console.log(`[TELEGRAM] Notification request from User ${userId}`);
-    console.log(`[TELEGRAM] Body:`, req.body);
+    // console.log(`[TELEGRAM] Body:`, JSON.stringify(req.body));
 
     if (USE_DB && redis) {
-        // Publish to Redis channel for the Bot to pick up
-        const message = req.body.text || req.body.message || "Notification from Game";
+        let messagesToSend = [];
+
+        // Handle Private Messages (pm)
+        if (req.body.pm && Array.isArray(req.body.pm)) {
+            req.body.pm.forEach(msg => {
+                messagesToSend.push(`✉️ **New Private Message**\nFrom: _${msg.from}_\n\n"${msg.content}"`);
+            });
+        }
+
+        // Handle Guild Messages (gm)
+        if (req.body.gm && Array.isArray(req.body.gm)) {
+            req.body.gm.forEach(msg => {
+                messagesToSend.push(`📜 **New Guild Message**\nFrom: _${msg.from}_\n\n"${msg.content}"`);
+            });
+        }
+
+        // Handle Bot/Battle Messages (bt)
+        if (req.body.bt && Array.isArray(req.body.bt)) {
+            req.body.bt.forEach(msg => {
+                messagesToSend.push(`🤖 **Bot Notification**\n"${msg.content}"`);
+            });
+        }
+
+        // Handle General/Event Messages (ge)
+        if (req.body.ge && Array.isArray(req.body.ge)) {
+            req.body.ge.forEach(msg => {
+                messagesToSend.push(`🌍 **General Event**\n"${msg.content}"`);
+            });
+        }
+
+        // Fallback
+        if (messagesToSend.length === 0) {
+            const fallback = req.body.text || req.body.message;
+            if (fallback) messagesToSend.push(fallback);
+        }
+
+        if (messagesToSend.length === 0) {
+            messagesToSend.push("🔔 Notification from Game (No content)");
+        }
+
+        // Join multiple messages
+        const finalMessage = messagesToSend.join("\n\n--------------------------------\n\n");
 
         await redis.publish('telegram_notifications', JSON.stringify({
             userId: userId,
-            text: message
+            text: finalMessage
         }));
         res.json({ success: true });
     } else {
