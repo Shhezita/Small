@@ -156,6 +156,11 @@ const checkUserLicense = (userId) => {
     }
 
     const allowedIdsString = process.env.ALLOWED_IDS || process.env.ALLOWED_PLAYERS || "";
+
+    console.log(`[DEBUG] RAW ALLOWED_IDS: "${process.env.ALLOWED_IDS}"`);
+    console.log(`[DEBUG] RAW ALLOWED_PLAYERS: "${process.env.ALLOWED_PLAYERS}"`);
+    console.log(`[DEBUG] FINAL STRING: "${allowedIdsString}"`);
+
     // Robust parsing: Handle if user hardcodes an array or string
     let allowedIds = [];
     if (Array.isArray(allowedIdsString)) {
