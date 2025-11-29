@@ -261,13 +261,13 @@ const handleTelegramToken = async (req, res) => {
     }
 
     // Client expects { access_token: "..." }
-    res.send(encryptResponse({ access_token: token }));
+    res.json({ access_token: token });
 };
 
 const handleDeleteTelegramToken = async (req, res) => {
     const userId = (req.user.userId !== 'unknown') ? req.user.userId : req.body.playerId;
     console.log(`[TELEGRAM] Disconnect requested for User ${userId}`);
-    res.send(encryptResponse({ success: true }));
+    res.json({ success: true });
 };
 
 // ==========================================
@@ -441,10 +441,10 @@ const handleTelegramNotification = async (req, res) => {
             userId: userId,
             text: message
         }));
-        res.send(encryptResponse({ success: true }));
+        res.json({ success: true });
     } else {
         console.warn("[TELEGRAM] Redis not active. Cannot send notification.");
-        res.send(encryptResponse({ success: false, error: "No Redis" }));
+        res.json({ success: false, error: "No Redis" });
     }
 };
 
@@ -495,7 +495,7 @@ const handleTelegramWebhookStatus = async (req, res) => {
     }
 
     // Default response if no messages
-    res.send(encryptResponse({ success: true, status: "active" }));
+    res.json({ success: true, status: "active" });
 };
 
 // ==========================================
